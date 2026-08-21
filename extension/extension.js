@@ -174,6 +174,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
          * so one failing must cost only its own feature -- a broken keybinding
          * should still leave a readable panel. */
         this._guard('keybinding', () => this._addKeybinding());
+        this._guard('D-Bus interface', () => this._exportDBus());
         this._guard('file monitor', () => this._watchSnapshot());
         this._guard('initial read', () => this._loadSnapshot());
         this._guard('refresh timer', () => this._scheduleRefresh());
@@ -200,6 +201,24 @@ class AgentUsageIndicator extends PanelMenu.Button {
      * without hunting for the icon. Opening the menu runs the same stale
      * check a click does, so the figures are current by the time they are
      * read. */
+    /* A D-Bus entry point, so the popup can also be opened by a command.
+     *
+     * Extension keybindings never appear in Settings' Custom Shortcuts list,
+     * and mutter can refuse a keybinding name outright. A method on the
+     * session bus gives a second, independent route in: bind any command you
+     * like to `gdbus call ... Toggle` and it works regardless. */
+    _exportDBus() {
+        const iface = `<node><interface name="org.gnome.Shell.Extensions.AiAgentUsage">
+            <method name="Toggle"/><method name="Open"/><method name="Refresh"/>
+        </interface></node>`;
+        this._dbus = Gio.DBusExportedObject.wrapJSObject(iface, {
+            Toggle: () => this.menu.toggle(),
+            Open: () => this.menu.open(),
+            Refresh: () => this._runCollector(true),
+        });
+        this._dbus.export(Gio.DBus.session, '/org/gnome/Shell/Extensions/AiAgentUsage');
+    }
+
     _addKeybinding() {
         /* addKeybinding returns Meta.KeyBindingAction.NONE on failure rather
          * than throwing, so a shortcut that never registers -- taken by
@@ -651,6 +670,10 @@ class AgentUsageIndicator extends PanelMenu.Button {
     }
 
     _onDestroy() {
+        if (this._dbus) {
+            this._dbus.unexport();
+            this._dbus = null;
+        }
         if (this._keybindingAdded) {
             Main.wm.removeKeybinding('ai-agent-usage-toggle');
             this._keybindingAdded = false;
