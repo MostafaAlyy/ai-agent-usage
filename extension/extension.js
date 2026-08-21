@@ -201,12 +201,24 @@ class AgentUsageIndicator extends PanelMenu.Button {
      * check a click does, so the figures are current by the time they are
      * read. */
     _addKeybinding() {
-        Main.wm.addKeybinding(
+        /* addKeybinding returns Meta.KeyBindingAction.NONE on failure rather
+         * than throwing, so a shortcut that never registers -- taken by
+         * another grab, or an accelerator the active layout cannot produce --
+         * would otherwise fail in complete silence. */
+        const action = Main.wm.addKeybinding(
             'toggle-menu',
             this._settings,
             Meta.KeyBindingFlags.NONE,
             Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
             () => this.menu.toggle());
+
+        const accelerator = this._settings.get_strv('toggle-menu')[0] ?? '';
+        if (action === Meta.KeyBindingAction.NONE) {
+            log_(`could not register the shortcut ${accelerator || '(unset)'};`
+                + ' it may already be taken by another application');
+            throw new Error(`shortcut ${accelerator} was refused`);
+        }
+        log_(`shortcut registered: ${accelerator || '(unset)'}`);
         this._keybindingAdded = true;
     }
 
