@@ -26,7 +26,12 @@
       <summary>Show model-scoped limits</summary>
       <description>Include per-model allowances alongside the account-wide windows.</description>
     </key>
-    <key name="toggle-menu" type="as">
+    <!-- Mutter's keybinding names are global across every extension, and the
+         first registration of a name wins: a later one is refused with
+         Meta.KeyBindingAction.NONE and simply never fires. A plain name like
+         "toggle-menu" collides with other panel extensions, so this one is
+         namespaced to the extension. -->
+    <key name="ai-agent-usage-toggle" type="as">
       <default>['&lt;Super&gt;&lt;Shift&gt;u']</default>
       <summary>Shortcut to open the usage popup</summary>
       <description>Opens or closes the AI Agents popup from anywhere. Empty disables it.</description>

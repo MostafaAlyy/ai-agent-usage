@@ -119,7 +119,7 @@ export default class AiAgentUsagePreferences extends ExtensionPreferences {
 
         const shortcuts = new Adw.PreferencesGroup({title: 'Shortcut'});
         page.add(shortcuts);
-        addShortcutRow(settings, shortcuts, 'toggle-menu', 'Open the usage popup',
+        addShortcutRow(settings, shortcuts, 'ai-agent-usage-toggle', 'Open the usage popup',
             'Works from anywhere, including the overview');
 
         const appearance = new Adw.PreferencesGroup({title: 'Appearance'});

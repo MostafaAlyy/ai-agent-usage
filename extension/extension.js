@@ -206,13 +206,13 @@ class AgentUsageIndicator extends PanelMenu.Button {
          * another grab, or an accelerator the active layout cannot produce --
          * would otherwise fail in complete silence. */
         const action = Main.wm.addKeybinding(
-            'toggle-menu',
+            'ai-agent-usage-toggle',
             this._settings,
             Meta.KeyBindingFlags.NONE,
             Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
             () => this.menu.toggle());
 
-        const accelerator = this._settings.get_strv('toggle-menu')[0] ?? '';
+        const accelerator = this._settings.get_strv('ai-agent-usage-toggle')[0] ?? '';
         if (action === Meta.KeyBindingAction.NONE) {
             log_(`could not register the shortcut ${accelerator || '(unset)'};`
                 + ' it may already be taken by another application');
@@ -652,7 +652,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
     _onDestroy() {
         if (this._keybindingAdded) {
-            Main.wm.removeKeybinding('toggle-menu');
+            Main.wm.removeKeybinding('ai-agent-usage-toggle');
             this._keybindingAdded = false;
         }
         for (const id of [this._timeoutId, this._countdownId, this._tooltipId]) {

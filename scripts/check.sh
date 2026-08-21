@@ -83,6 +83,47 @@ print(f"  \033[32m✓\033[0m all {len(used)} settings keys exist in the schema")
 PY
 [ $? -ne 0 ] && fails=$((fails + 1))
 
+head_ "Keybinding names"
+python3 - "$EXT" <<'PY'
+import re, sys, glob, os, xml.etree.ElementTree as ET
+from pathlib import Path
+
+ext = Path(sys.argv[1])
+mine = set()
+for name in ("extension.js",):
+    text = (ext / name).read_text(encoding="utf-8")
+    mine |= set(re.findall(r"addKeybinding\(\s*['\"]([\w-]+)['\"]", text))
+
+if not mine:
+    print("  \033[32m✓\033[0m no keybindings registered")
+    sys.exit(0)
+
+# Mutter keeps one global table of keybinding names: the first extension to
+# register a name wins, and every later one is refused with
+# Meta.KeyBindingAction.NONE and never fires. Names must therefore be unique
+# across every extension the user has installed, not just within this one.
+clashes = []
+roots = [Path.home() / ".local/share/gnome-shell/extensions", Path("/usr/share/gnome-shell/extensions")]
+for root in roots:
+    for schema in glob.glob(str(root / "*" / "schemas" / "*.gschema.xml")):
+        uuid = Path(schema).parent.parent.name
+        if uuid == ext.parent.name or "ai-agent-usage" in uuid:
+            continue
+        try:
+            keys = {k.get("name") for k in ET.parse(schema).getroot().iter("key")}
+        except ET.ParseError:
+            continue
+        for name in sorted(mine & keys):
+            clashes.append(f"{name} also used by {uuid}")
+
+if clashes:
+    for clash in clashes:
+        print(f"  \033[31m✗\033[0m keybinding name {clash}")
+    sys.exit(1)
+print(f"  \033[32m✓\033[0m {', '.join(sorted(mine))} unique across installed extensions")
+PY
+[ $? -ne 0 ] && fails=$((fails + 1))
+
 head_ "Schema compiles"
 if out=$(glib-compile-schemas --strict --dry-run "$EXT/schemas" 2>&1); then
   ok "gschema is valid"
