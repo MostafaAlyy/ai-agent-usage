@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install the agent-usage collector and the AI Agent Usage GNOME extension
+# Install the AI Agent Usage GNOME extension (which bundles its collector)
 # into this user's home. Nothing outside $HOME is touched, no system files
 # are modified, and nothing here needs root.
 set -euo pipefail
@@ -12,7 +12,6 @@ DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 
-COLLECTOR_DIR="$DATA_HOME/agent-usage"
 EXTENSION_DIR="$DATA_HOME/gnome-shell/extensions/$UUID"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
 
@@ -22,23 +21,14 @@ fail() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ------------------------------------------------------------ requirements
 
-command -v python3 >/dev/null || fail "python3 is required."
+command -v gjs >/dev/null || fail "gjs is required (it ships with GNOME)."
 command -v glib-compile-schemas >/dev/null || fail "glib-compile-schemas is required (dnf install glib2-devel)."
 
 if ! command -v gnome-shell >/dev/null; then
-  warn "gnome-shell was not found. The collector will still be installed."
+  warn "gnome-shell was not found; installing the files anyway."
 else
   info "GNOME Shell $(gnome-shell --version | awk '{print $3}') detected."
 fi
-
-# -------------------------------------------------------------- collector
-
-info "Installing the collector into $COLLECTOR_DIR"
-mkdir -p "$COLLECTOR_DIR/providers" "$COLLECTOR_DIR/lib" "$STATE_HOME/agent-usage"
-install -m 0755 "$SOURCE_DIR/collector/agent-usage" "$COLLECTOR_DIR/agent-usage"
-install -m 0755 "$SOURCE_DIR/collector/providers/"* "$COLLECTOR_DIR/providers/"
-install -m 0644 "$SOURCE_DIR/collector/lib/"*.py "$COLLECTOR_DIR/lib/"
-[ -f "$SOURCE_DIR/README.md" ] && install -m 0644 "$SOURCE_DIR/README.md" "$COLLECTOR_DIR/README.md"
 
 # --------------------------------------------------------------- extension
 
@@ -69,11 +59,12 @@ PYMIGRATE
 fi
 
 info "Installing the extension into $EXTENSION_DIR"
-mkdir -p "$EXTENSION_DIR/schemas" "$EXTENSION_DIR/icons"
+mkdir -p "$EXTENSION_DIR/schemas" "$EXTENSION_DIR/icons" "$STATE_HOME/agent-usage"
 install -m 0644 "$SOURCE_DIR/extension/metadata.json" "$EXTENSION_DIR/"
 install -m 0644 "$SOURCE_DIR/extension/extension.js" "$EXTENSION_DIR/"
 install -m 0644 "$SOURCE_DIR/extension/prefs.js" "$EXTENSION_DIR/"
 install -m 0644 "$SOURCE_DIR/extension/stylesheet.css" "$EXTENSION_DIR/"
+install -m 0644 "$SOURCE_DIR/extension/collector.js" "$EXTENSION_DIR/"
 install -m 0644 "$SOURCE_DIR/extension/icons/"*.svg "$EXTENSION_DIR/icons/"
 install -m 0644 "$SOURCE_DIR/extension/schemas/"*.gschema.xml "$EXTENSION_DIR/schemas/"
 glib-compile-schemas "$EXTENSION_DIR/schemas"
@@ -91,7 +82,7 @@ info "Timer enabled: $(systemctl --user show -p NextElapseUSecRealtime --value a
 # ------------------------------------------------------------- first fetch
 
 info "Running the collector once"
-if "$COLLECTOR_DIR/agent-usage" --force; then
+if gjs -m "$EXTENSION_DIR/collector.js" --force; then
   info "Snapshot written to $STATE_HOME/agent-usage/usage.json"
 else
   warn "The first collection reported an error. The extension will still load."
@@ -114,8 +105,7 @@ cat <<EOF
 
 Installed.
 
-  collector   $COLLECTOR_DIR/agent-usage
-  providers   $COLLECTOR_DIR/providers/
+  collector   $EXTENSION_DIR/collector.js
   snapshot    $STATE_HOME/agent-usage/usage.json
   extension   $EXTENSION_DIR
   timer       $UNIT_DIR/agent-usage.timer
@@ -124,7 +114,7 @@ Next steps
   * On Wayland, GNOME Shell cannot reload extensions in place. If the icon is
     not in the top bar yet, log out and back in.
   * Preferences:  gnome-extensions prefs $UUID
-  * Manual run:   $COLLECTOR_DIR/agent-usage --force --print
+  * Manual run:   gjs -m $EXTENSION_DIR/collector.js --force --print
   * Logs:         journalctl --user -f -o cat /usr/bin/gnome-shell
                   journalctl --user -u agent-usage.service
 

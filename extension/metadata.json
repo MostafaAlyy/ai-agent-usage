@@ -8,7 +8,6 @@
     "50"
   ],
   "settings-schema": "org.gnome.shell.extensions.ai-agent-usage",
-  "gettext-domain": "ai-agent-usage",
   "version": 1,
   "version-name": "1.0.0",
   "url": "https://github.com/MostafaAlyy/ai-agent-usage"

@@ -1,15 +1,14 @@
 [Unit]
 Description=Refresh the cached AI agent usage snapshot
-Documentation=file:%h/.local/share/agent-usage/README.md
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/share/agent-usage/agent-usage
+ExecStart=/usr/bin/gjs -m %h/.local/share/gnome-shell/extensions/ai-agent-usage@mostafaalyy.github.io/collector.js
 # The collector talks to provider endpoints and reads the CLI credential
-# stores; it needs nothing else from the system. ProtectHome is deliberately
-# NOT set: `codex app-server` writes inside $HOME while it runs, and a
-# read-only home makes it hang until the RPC times out.
+# stores; it needs nothing else. ProtectHome is deliberately NOT set: the
+# codex CLI writes inside $HOME while it runs, and a read-only home makes it
+# hang until the RPC times out.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

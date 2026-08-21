@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Mostafa Aly
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+
 /* AI Agent Usage -- GNOME Shell panel indicator.
  *
  * The Shell never talks to a provider. It reads one cached JSON snapshot
@@ -20,7 +23,6 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const SNAPSHOT_PATH = GLib.build_filenamev([GLib.get_user_state_dir(), 'agent-usage', 'usage.json']);
-const COLLECTOR_PATH = GLib.build_filenamev([GLib.get_user_data_dir(), 'agent-usage', 'agent-usage']);
 
 /* A refresh triggered by opening the menu reuses a snapshot this fresh
  * rather than spawning the collector for a glance. */
@@ -243,8 +245,14 @@ class AgentUsageIndicator extends PanelMenu.Button {
         });
     }
 
+    /* The collector ships inside the extension and runs as its own gjs
+     * process, so the Shell never does the gathering itself. */
+    _collectorPath() {
+        return GLib.build_filenamev([this._extension.path, 'collector.js']);
+    }
+
     _collectorInstalled() {
-        return GLib.file_test(COLLECTOR_PATH, GLib.FileTest.IS_EXECUTABLE);
+        return GLib.file_test(this._collectorPath(), GLib.FileTest.IS_REGULAR);
     }
 
     /* The collector runs as its own process. Nothing here waits on it -- the
@@ -253,12 +261,12 @@ class AgentUsageIndicator extends PanelMenu.Button {
         if (this._refreshing)
             return;
         if (!this._collectorInstalled()) {
-            log_(`collector not found at ${COLLECTOR_PATH}`);
+            log_(`collector.js is missing from ${this._extension.path}`);
             this._render({force: true});
             return;
         }
 
-        const argv = [COLLECTOR_PATH];
+        const argv = ['gjs', '-m', this._collectorPath()];
         if (force)
             argv.push('--force');
         else
@@ -398,10 +406,9 @@ class AgentUsageIndicator extends PanelMenu.Button {
         const providers = this._enabledProviders();
         if (!this._snapshot && !this._collectorInstalled()) {
             this._body.addMenuItem(this._noticeItem(
-                'Collector not installed',
-                'This extension only renders data; a small background collector '
-                + 'gathers it. Install it from '
-                + 'github.com/MostafaAlyy/ai-agent-usage by running ./install.sh'));
+                'Collector missing',
+                'collector.js was not found in the extension directory. '
+                + 'Reinstalling the extension should restore it.'));
         } else if (!this._snapshot) {
             this._body.addMenuItem(this._noticeItem(
                 this._refreshing ? 'Loading usage…' : 'No usage data yet.',

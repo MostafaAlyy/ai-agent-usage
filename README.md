@@ -21,18 +21,19 @@ Last updated: 20:19    ↻ Refresh  ⚙
 
 ```
   systemd user timer ──┐
-                       ├──> agent-usage (orchestrator)
-  extension timer ─────┘         │  runs each provider concurrently,
-  extension Refresh ─────────────┘  each in its own process with a timeout
+  extension timer ─────┼──> gjs -m collector.js   (its own process)
+  extension Refresh ───┘         │  Codex via JSON-RPC over stdio,
+  Super+Shift+U ─────────────────┘  Claude via one HTTPS request
                                      │
-                            providers/codex, providers/claude
-                                     │  one JSON record each
-                                     ▼
                     ~/.local/state/agent-usage/usage.json
                                      │  watched by Gio.FileMonitor
                                      ▼
                         GNOME Shell extension (render only)
 ```
+
+The collector ships inside the extension and runs as a separate `gjs` process,
+so the extension is self-contained but the Shell still never does the gathering
+itself.
 
 The Shell never talks to a provider. It reads a cached JSON snapshot and
 spawns the collector asynchronously, so no network or CLI call can ever stall
@@ -46,8 +47,8 @@ the compositor.
 | Claude Code | `GET https://api.anthropic.com/api/oauth/usage` with the access token from `~/.claude/.credentials.json` | No — see `NOTICE.md` |
 
 Both undocumented mechanisms are isolated in a single function per provider
-(`fetch_rate_limits` and `probe_usage`) so they can be replaced without
-touching anything else.
+(`collectCodex` and `probeClaudeUsage` in `extension/collector.js`) so they can
+be replaced without touching anything else.
 
 ## Security
 
@@ -74,7 +75,7 @@ root, no Arch tooling.
 
 ## Adding a provider
 
-Drop an executable in `collector/providers/` that prints one JSON record:
+Add an entry to `PROVIDERS` in `extension/collector.js` returning one record:
 
 ```json
 {"schemaVersion":1,"id":"gemini","name":"Gemini","available":true,
@@ -86,15 +87,13 @@ Drop an executable in `collector/providers/` that prints one JSON record:
 
 `status` is one of `ok`, `not_configured`, `auth`, `error`. `group` is
 `primary` for account-wide windows or `scoped` for per-model allowances.
-Nothing else needs to change — the orchestrator discovers providers by
-listing the directory, and the extension renders whatever it finds.
+Nothing else needs to change — the extension renders whatever it finds.
 
 ## Debugging
 
 ```bash
 # Collector, by hand
-~/.local/share/agent-usage/agent-usage --force --print
-~/.local/share/agent-usage/providers/codex | jq .
+gjs -m ~/.local/share/gnome-shell/extensions/ai-agent-usage@mostafaalyy.github.io/collector.js --force --print
 
 # Timer
 systemctl --user status agent-usage.timer

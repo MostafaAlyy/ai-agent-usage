@@ -20,7 +20,7 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 head_ "JavaScript syntax"
 if command -v node >/dev/null; then
-  for file in extension.js prefs.js; do
+  for file in extension.js prefs.js collector.js; do
     tmp=$(mktemp --suffix=.mjs)
     cp "$EXT/$file" "$tmp"
     if err=$(node --check "$tmp" 2>&1); then ok "$file parses"; else bad "$file: $err"; fi
@@ -110,17 +110,17 @@ PY
 [ $? -ne 0 ] && fails=$((fails + 1))
 
 head_ "Collector"
-for file in "$ROOT"/collector/providers/* "$ROOT"/collector/agent-usage "$ROOT"/collector/lib/agentusage.py; do
-  if python3 -m py_compile "$file" 2>/dev/null; then ok "$(basename "$file") compiles"; else bad "$(basename "$file") has a syntax error"; fi
-done
-find "$ROOT/collector" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+tmp=$(mktemp --suffix=.mjs); cp "$EXT/collector.js" "$tmp"
+if err=$(node --check "$tmp" 2>&1); then ok "collector.js parses"; else bad "collector.js: $err"; fi
+rm -f "$tmp"
 
-if record=$("$ROOT/collector/agent-usage" --print --max-age 3600 2>/dev/null); then
+if record=$(gjs -m "$EXT/collector.js" --force --print 2>/dev/null); then
   echo "$record" | python3 -c "
 import json,sys
 snap = json.load(sys.stdin)
 for pid, p in snap['providers'].items():
-    print(f\"  \033[32m✓\033[0m {pid}: {p['status']}, {len(p['limits'])} limit(s)\")
+    mark = '\033[32m✓\033[0m' if p['status'] == 'ok' else '\033[33m!\033[0m'
+    print(f\"  {mark} {pid}: {p['status']}, {len(p['limits'])} limit(s)\")
 " || bad "collector printed unusable JSON"
 else
   bad "collector failed to run"

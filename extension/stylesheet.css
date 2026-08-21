@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2026 Mostafa Aly
+ * SPDX-License-Identifier: MIT OR GPL-2.0-or-later */
+
 /* Colours come from the Shell's own theme wherever one exists, so the panel
  * follows light/dark and the user's accent colour without hardcoding a palette.
  * Only the two alert states introduce a hue of their own, and both are muted. */
