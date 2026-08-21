@@ -166,13 +166,32 @@ class AgentUsageIndicator extends PanelMenu.Button {
         this.connect('notify::hover', () => this._onHover());
         this.connect('destroy', () => this._onDestroy());
 
-        this._addKeybinding();
-        this._watchSnapshot();
-        this._loadSnapshot();
-        this._scheduleRefresh();
+        /* Startup is where an extension most often takes itself out: anything
+         * that throws in the constructor leaves the Shell with no indicator at
+         * all and only a backtrace in the journal. Each step is independent,
+         * so one failing must cost only its own feature -- a broken keybinding
+         * should still leave a readable panel. */
+        this._guard('keybinding', () => this._addKeybinding());
+        this._guard('file monitor', () => this._watchSnapshot());
+        this._guard('initial read', () => this._loadSnapshot());
+        this._guard('refresh timer', () => this._scheduleRefresh());
         /* Data may be from before suspend or from a login that predates the
          * collector's first timer run, so ask for a refresh once at start. */
-        this._runCollector(false);
+        this._guard('initial refresh', () => this._runCollector(false));
+        this._guard('first paint', () => this._render({force: true}));
+    }
+
+    /* Run one startup step, and turn a failure into a logged note rather than
+     * a dead extension. The message surfaces in the popup so the panel says
+     * what is wrong instead of silently missing a feature. */
+    _guard(what, step) {
+        try {
+            step();
+        } catch (error) {
+            log_(`${what} failed: ${error}`);
+            this._startupErrors ??= [];
+            this._startupErrors.push(what);
+        }
     }
 
     /* A shortcut is the fast path this widget is for: glance at the numbers
@@ -273,7 +292,13 @@ class AgentUsageIndicator extends PanelMenu.Button {
             GLib.Source.remove(this._timeoutId);
         const minutes = Math.max(1, this._settings.get_int('refresh-interval'));
         this._timeoutId = GLib.timeout_add_seconds(GLib.PRIORITY_LOW, minutes * 60, () => {
-            this._runCollector(true);
+            try {
+                this._runCollector(true);
+            } catch (error) {
+                // Returning without SOURCE_CONTINUE would end every future
+                // refresh over one bad run.
+                log_(`scheduled refresh failed: ${error}`);
+            }
             return GLib.SOURCE_CONTINUE;
         });
     }
@@ -389,6 +414,13 @@ class AgentUsageIndicator extends PanelMenu.Button {
                     this._body.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
                 this._addProvider(provider);
             });
+        }
+
+        if (this._startupErrors?.length) {
+            this._body.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            this._body.addMenuItem(this._noticeItem(
+                'Some features did not start',
+                `${this._startupErrors.join(', ')}. See: journalctl --user -b /usr/bin/gnome-shell`));
         }
 
         this._updatePanel();
