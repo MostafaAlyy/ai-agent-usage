@@ -1,4 +1,5 @@
 import Adw from 'gi://Adw';
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
@@ -23,6 +24,66 @@ function bindProviderSwitch(settings, row, id) {
             current.delete(id);
         settings.set_strv('enabled-providers', PROVIDERS.map(p => p.id).filter(p => current.has(p)));
     });
+}
+
+/* A shortcut row that captures the next key combination.
+ *
+ * GTK has no ready-made accelerator picker, so the row shows the current
+ * binding as a Gtk.ShortcutLabel and swaps to a modal capture window when
+ * activated. Escape cancels, Backspace clears -- the conventions people
+ * already expect from GNOME's own keyboard settings. */
+function addShortcutRow(settings, group, key, title, subtitle) {
+    const row = new Adw.ActionRow({title, subtitle, activatable: true});
+    const label = new Gtk.ShortcutLabel({
+        valign: Gtk.Align.CENTER,
+        disabled_text: 'Disabled',
+        accelerator: settings.get_strv(key)[0] ?? '',
+    });
+    row.add_suffix(label);
+    settings.connect(`changed::${key}`, () => {
+        label.accelerator = settings.get_strv(key)[0] ?? '';
+    });
+
+    row.connect('activated', () => {
+        const capture = new Adw.Window({
+            modal: true,
+            transient_for: row.get_root(),
+            hide_on_close: true,
+            width_request: 380,
+            height_request: 180,
+            content: new Adw.StatusPage({
+                title: 'Press a shortcut',
+                description: 'Esc to cancel, Backspace to disable',
+                icon_name: 'preferences-desktop-keyboard-shortcuts-symbolic',
+            }),
+        });
+
+        const keys = new Gtk.EventControllerKey();
+        capture.add_controller(keys);
+        keys.connect('key-pressed', (_controller, keyval, keycode, state) => {
+            const mask = state & Gtk.accelerator_get_default_mod_mask() & ~Gdk.ModifierType.LOCK_MASK;
+            if (keyval === Gdk.KEY_Escape && mask === 0) {
+                capture.close();
+                return true;   // handled
+            }
+            if (keyval === Gdk.KEY_BackSpace && mask === 0) {
+                settings.set_strv(key, []);
+                capture.close();
+                return true;   // handled
+            }
+            // A bare modifier is the user still reaching for the combination.
+            if (!Gtk.accelerator_valid(keyval, mask))
+                return true;   // handled
+            settings.set_strv(key, [Gtk.accelerator_name_with_keycode(null, keyval, keycode, mask)]);
+            capture.close();
+            return true;   // handled
+        });
+
+        capture.present();
+    });
+
+    group.add(row);
+    return row;
 }
 
 export default class AiAgentUsagePreferences extends ExtensionPreferences {
@@ -52,6 +113,11 @@ export default class AiAgentUsagePreferences extends ExtensionPreferences {
         });
         behaviour.add(interval);
         settings.bind('refresh-interval', interval, 'value', Gio.SettingsBindFlags.DEFAULT);
+
+        const shortcuts = new Adw.PreferencesGroup({title: 'Shortcut'});
+        page.add(shortcuts);
+        addShortcutRow(settings, shortcuts, 'toggle-menu', 'Open the usage popup',
+            'Works from anywhere, including the overview');
 
         const appearance = new Adw.PreferencesGroup({title: 'Appearance'});
         page.add(appearance);

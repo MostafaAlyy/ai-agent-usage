@@ -102,8 +102,27 @@ journalctl --user -u agent-usage.service -f
 
 # Extension
 journalctl --user -f -o cat /usr/bin/gnome-shell | grep ai-agent-usage
-gnome-extensions info ai-agent-usage@local
+gnome-extensions info ai-agent-usage@mostafaalyy.github.io
 ```
+
+## Testing
+
+```bash
+./scripts/check.sh
+```
+
+Static checks only: JavaScript syntax, every `this._method()` call resolving to
+a real definition, every settings key existing in the schema, the schema
+compiling, metadata validity, and a live collector run.
+
+**Do not test by launching a nested `gnome-shell`.** Even with `--headless` it
+claims the DRM devices, starts its own Xwayland, and registers with GDM, which
+can black-screen or log out the real session. The checks above catch the
+failure modes that actually occur; the rest needs a real login.
+
+GNOME Shell caches extension modules, so `disable`/`enable` re-runs the *old*
+code after an edit. Picking up a changed `extension.js` needs a Shell restart —
+under Wayland, a log out and back in.
 
 ## Known limitations
 

@@ -2,7 +2,7 @@
 # Remove everything install.sh created. Leaves no system state behind.
 set -euo pipefail
 
-UUID="ai-agent-usage@local"
+UUID="ai-agent-usage@mostafaalyy.github.io"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"

@@ -26,6 +26,11 @@
       <summary>Show model-scoped limits</summary>
       <description>Include per-model allowances alongside the account-wide windows.</description>
     </key>
+    <key name="toggle-menu" type="as">
+      <default>['&lt;Super&gt;&lt;Shift&gt;u']</default>
+      <summary>Shortcut to open the usage popup</summary>
+      <description>Opens or closes the AI Agents popup from anywhere. Empty disables it.</description>
+    </key>
     <key name="warning-threshold" type="i">
       <range min="50" max="100"/>
       <default>80</default>

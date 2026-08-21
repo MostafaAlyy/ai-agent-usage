@@ -10,6 +10,8 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -164,12 +166,27 @@ class AgentUsageIndicator extends PanelMenu.Button {
         this.connect('notify::hover', () => this._onHover());
         this.connect('destroy', () => this._onDestroy());
 
+        this._addKeybinding();
         this._watchSnapshot();
         this._loadSnapshot();
         this._scheduleRefresh();
         /* Data may be from before suspend or from a login that predates the
          * collector's first timer run, so ask for a refresh once at start. */
         this._runCollector(false);
+    }
+
+    /* A shortcut is the fast path this widget is for: glance at the numbers
+     * without hunting for the icon. Opening the menu runs the same stale
+     * check a click does, so the figures are current by the time they are
+     * read. */
+    _addKeybinding() {
+        Main.wm.addKeybinding(
+            'toggle-menu',
+            this._settings,
+            Meta.KeyBindingFlags.NONE,
+            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this.menu.toggle());
+        this._keybindingAdded = true;
     }
 
     /* ------------------------------------------------------------- data */
@@ -207,14 +224,18 @@ class AgentUsageIndicator extends PanelMenu.Button {
         });
     }
 
+    _collectorInstalled() {
+        return GLib.file_test(COLLECTOR_PATH, GLib.FileTest.IS_EXECUTABLE);
+    }
+
     /* The collector runs as its own process. Nothing here waits on it -- the
      * file monitor above is what turns a finished run into a redraw. */
     _runCollector(force) {
         if (this._refreshing)
             return;
-        if (!GLib.file_test(COLLECTOR_PATH, GLib.FileTest.IS_EXECUTABLE)) {
+        if (!this._collectorInstalled()) {
             log_(`collector not found at ${COLLECTOR_PATH}`);
-            this._render();
+            this._render({force: true});
             return;
         }
 
@@ -350,7 +371,13 @@ class AgentUsageIndicator extends PanelMenu.Button {
         this._countdownLabels = [];
 
         const providers = this._enabledProviders();
-        if (!this._snapshot) {
+        if (!this._snapshot && !this._collectorInstalled()) {
+            this._body.addMenuItem(this._noticeItem(
+                'Collector not installed',
+                'This extension only renders data; a small background collector '
+                + 'gathers it. Install it from '
+                + 'github.com/MostafaAlyy/ai-agent-usage by running ./install.sh'));
+        } else if (!this._snapshot) {
             this._body.addMenuItem(this._noticeItem(
                 this._refreshing ? 'Loading usage…' : 'No usage data yet.',
                 this._refreshing ? '' : 'Press Refresh to run the collector for the first time.'));
@@ -573,6 +600,10 @@ class AgentUsageIndicator extends PanelMenu.Button {
     }
 
     _onDestroy() {
+        if (this._keybindingAdded) {
+            Main.wm.removeKeybinding('toggle-menu');
+            this._keybindingAdded = false;
+        }
         for (const id of [this._timeoutId, this._countdownId, this._tooltipId]) {
             if (id)
                 GLib.Source.remove(id);

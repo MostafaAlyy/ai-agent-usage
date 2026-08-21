@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UUID="ai-agent-usage@local"
+UUID="ai-agent-usage@mostafaalyy.github.io"
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -41,6 +41,32 @@ install -m 0644 "$SOURCE_DIR/collector/lib/"*.py "$COLLECTOR_DIR/lib/"
 [ -f "$SOURCE_DIR/README.md" ] && install -m 0644 "$SOURCE_DIR/README.md" "$COLLECTOR_DIR/README.md"
 
 # --------------------------------------------------------------- extension
+
+# The extension shipped briefly as ai-agent-usage@local. Leaving that copy in
+# place would load a second, identical indicator into the panel.
+LEGACY_UUID="ai-agent-usage@local"
+LEGACY_DIR="$DATA_HOME/gnome-shell/extensions/$LEGACY_UUID"
+if [ -d "$LEGACY_DIR" ]; then
+  info "Removing the previous $LEGACY_UUID install"
+  rm -rf "$LEGACY_DIR"
+  python3 - "$LEGACY_UUID" "$UUID" <<'PYMIGRATE'
+import ast, subprocess, sys
+legacy, current = sys.argv[1], sys.argv[2]
+raw = subprocess.run(['gsettings', 'get', 'org.gnome.shell', 'enabled-extensions'],
+                     capture_output=True, text=True).stdout.strip()
+try:
+    items = ast.literal_eval(raw.replace('@as ', ''))
+except (ValueError, SyntaxError):
+    sys.exit(0)
+updated = [i for i in items if i != legacy]
+if current not in updated:
+    updated.append(current)
+if updated != items:
+    value = '[' + ', '.join("'%s'" % i for i in updated) + ']'
+    subprocess.run(['gsettings', 'set', 'org.gnome.shell', 'enabled-extensions', value])
+    print('  migrated enabled-extensions to %s' % current)
+PYMIGRATE
+fi
 
 info "Installing the extension into $EXTENSION_DIR"
 mkdir -p "$EXTENSION_DIR/schemas" "$EXTENSION_DIR/icons"

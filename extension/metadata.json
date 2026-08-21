@@ -1,10 +1,15 @@
 {
-  "uuid": "ai-agent-usage@local",
+  "uuid": "ai-agent-usage@mostafaalyy.github.io",
   "name": "AI Agent Usage",
   "description": "Shows OpenAI Codex and Claude Code usage limits in the top bar. Reads a cached snapshot produced by a background collector, so the Shell never blocks on the network.",
-  "shell-version": ["48", "49", "50"],
+  "shell-version": [
+    "48",
+    "49",
+    "50"
+  ],
   "settings-schema": "org.gnome.shell.extensions.ai-agent-usage",
   "gettext-domain": "ai-agent-usage",
   "version": 1,
-  "version-name": "1.0.0"
+  "version-name": "1.0.0",
+  "url": "https://github.com/MostafaAlyy/ai-agent-usage"
 }
