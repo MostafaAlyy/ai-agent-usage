@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="ai-agent-usage">
+  <schema id="org.gnome.shell.extensions.ai-agent-usage"
+          path="/org/gnome/shell/extensions/ai-agent-usage/">
+    <key name="enabled-providers" type="as">
+      <default>['codex','claude']</default>
+      <summary>Providers to show</summary>
+      <description>Identifiers of the agent providers rendered in the panel menu.</description>
+    </key>
+    <key name="refresh-interval" type="i">
+      <range min="1" max="240"/>
+      <default>15</default>
+      <summary>Refresh interval in minutes</summary>
+      <description>How often the extension asks the collector for fresh usage data.</description>
+    </key>
+    <key name="show-percentage" type="b">
+      <default>false</default>
+      <summary>Show the highest usage percentage in the panel</summary>
+    </key>
+    <key name="show-countdown" type="b">
+      <default>true</default>
+      <summary>Show a countdown to each limit reset</summary>
+    </key>
+    <key name="show-scoped-limits" type="b">
+      <default>true</default>
+      <summary>Show model-scoped limits</summary>
+      <description>Include per-model allowances alongside the account-wide windows.</description>
+    </key>
+    <key name="warning-threshold" type="i">
+      <range min="50" max="100"/>
+      <default>80</default>
+      <summary>Warning threshold</summary>
+      <description>Usage at or above this percentage is highlighted.</description>
+    </key>
+  </schema>
+</schemalist>

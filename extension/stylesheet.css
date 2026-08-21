@@ -1,0 +1,166 @@
+/* Colours come from the Shell's own theme wherever one exists, so the panel
+ * follows light/dark and the user's accent colour without hardcoding a palette.
+ * Only the two alert states introduce a hue of their own, and both are muted. */
+
+.aiu-panel-box {
+  spacing: 4px;
+}
+
+.aiu-panel-label {
+  font-size: 0.9em;
+  font-feature-settings: "tnum";
+}
+
+.aiu-item {
+  padding: 4px 16px;
+}
+
+.aiu-header {
+  spacing: 8px;
+}
+
+.aiu-title {
+  font-weight: 700;
+}
+
+.aiu-card {
+  spacing: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background-color: rgba(127, 127, 127, 0.10);
+}
+
+.aiu-card-header {
+  spacing: 8px;
+  padding-bottom: 2px;
+}
+
+.aiu-provider {
+  font-weight: 700;
+}
+
+.aiu-badge {
+  font-size: 0.8em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background-color: rgba(127, 127, 127, 0.18);
+}
+
+.aiu-limit {
+  spacing: 3px;
+  padding-top: 2px;
+}
+
+.aiu-limit-header {
+  spacing: 10px;
+}
+
+.aiu-value {
+  font-feature-settings: "tnum";
+  font-weight: 700;
+}
+
+.aiu-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background-color: rgba(127, 127, 127, 0.25);
+}
+
+.aiu-bar-fill {
+  border-radius: 3px;
+  background-color: -st-accent-color;
+}
+
+/* Alert colours come from the Adwaita palette rather than being invented, and
+ * they split by surface. A bar sits on a neutral track, so the bright pair
+ * reads well against either theme. Text and the panel glyph sit directly on
+ * the theme background, where the bright yellow drops to roughly 2:1 contrast
+ * on a light panel -- so those use the darker pair, which clears 4.5:1 on
+ * light and stays legible on dark. St has no media queries, so one value has
+ * to serve both themes. */
+.aiu-bar-fill.aiu-warning {
+  background-color: #e5a50a;
+}
+
+.aiu-bar-fill.aiu-critical {
+  background-color: #e01b24;
+}
+
+.aiu-value.aiu-warning,
+.system-status-icon.aiu-warning {
+  color: #c26100;
+}
+
+.aiu-value.aiu-critical,
+.system-status-icon.aiu-critical {
+  color: #c01c28;
+}
+
+.aiu-dim {
+  color: rgba(127, 127, 127, 1.0);
+  font-size: 0.85em;
+}
+
+.aiu-reset {
+  padding-top: 1px;
+}
+
+.aiu-note,
+.aiu-empty {
+  padding-top: 2px;
+}
+
+.aiu-wrap {
+  max-width: 260px;
+}
+
+.aiu-notice {
+  font-weight: 700;
+}
+
+.aiu-footer {
+  spacing: 6px;
+  padding-top: 2px;
+}
+
+.aiu-button {
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+
+.aiu-button:hover,
+.aiu-button:focus {
+  background-color: rgba(127, 127, 127, 0.20);
+}
+
+.aiu-button:active {
+  background-color: rgba(127, 127, 127, 0.30);
+}
+
+.aiu-button:insensitive {
+  color: rgba(127, 127, 127, 0.6);
+}
+
+.aiu-button-box {
+  spacing: 6px;
+}
+
+.aiu-button-icon {
+  icon-size: 16px;
+}
+
+.aiu-icon-button {
+  padding: 4px 8px;
+}
+
+.aiu-tooltip {
+  background-color: rgba(0, 0, 0, 0.85);
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.9em;
+}
+
+.popup-menu-content .aiu-item {
+  min-width: 280px;
+}

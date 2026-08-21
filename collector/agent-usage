@@ -1,0 +1,186 @@
+#!/usr/bin/python3
+"""Refresh the cached AI agent usage snapshot.
+
+Runs every provider collector in `providers/` concurrently, each in its own
+process with its own timeout, and merges the results into one normalized
+document at $XDG_STATE_HOME/agent-usage/usage.json.
+
+A provider is one executable that prints one JSON record. Adding a provider
+is dropping a file into providers/ -- nothing here needs to learn its name.
+
+One provider can never break the snapshot: a collector that crashes, hangs,
+or prints garbage is recorded as an error entry beside the ones that worked.
+"""
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / "lib"))
+import agentusage as au  # noqa: E402
+
+PROVIDER_DIR = HERE / "providers"
+SNAPSHOT = au.state_dir() / "usage.json"
+COLLECTOR_TIMEOUT = 30.0
+# Rendering order in the panel; anything not listed sorts after, alphabetically.
+PREFERRED_ORDER = ["codex", "claude"]
+
+
+def provider_scripts(only):
+    scripts = []
+    if not PROVIDER_DIR.is_dir():
+        return scripts
+    for path in sorted(PROVIDER_DIR.iterdir()):
+        if not path.is_file() or not os.access(path, os.X_OK) or path.name.startswith("."):
+            continue
+        if only and path.name not in only:
+            continue
+        scripts.append(path)
+    return scripts
+
+
+def run_provider(path: Path, force: bool) -> tuple:
+    """(id, record) for one collector. Never raises."""
+    name = path.name
+    command = [str(path)] + (["--force"] if force else [])
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=COLLECTOR_TIMEOUT,
+            # A collector must not inherit an interactive stdin, or a CLI that
+            # decides to prompt would hang the whole refresh.
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        au.log(f"{name}: timed out after {COLLECTOR_TIMEOUT:.0f}s")
+        return name, au.record(name, name.title(), status=au.STATUS_ERROR, message="The collector timed out.")
+    except OSError as exc:
+        au.log(f"{name}: could not run collector ({exc.strerror})")
+        return name, au.record(name, name.title(), status=au.STATUS_ERROR, message="The collector could not be started.")
+
+    elapsed = time.monotonic() - started
+    if completed.stderr.strip():
+        # Collector diagnostics are already secret-free by construction.
+        au.log(f"{name}: {completed.stderr.strip().splitlines()[-1]}")
+
+    try:
+        parsed = json.loads(completed.stdout)
+        if not isinstance(parsed, dict) or not parsed.get("id"):
+            raise ValueError("record missing an id")
+    except (ValueError, TypeError) as exc:
+        au.log(f"{name}: unusable output ({exc})")
+        return name, au.record(name, name.title(), status=au.STATUS_ERROR, message="The collector produced unreadable output.")
+
+    au.log(f"{name}: {parsed.get('status')} in {elapsed:.1f}s")
+    return str(parsed["id"]), parsed
+
+
+def window_still_open(entry, now) -> bool:
+    raw = entry.get("resetsAt") if isinstance(entry, dict) else None
+    if not raw:
+        return True
+    try:
+        resets = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if resets.tzinfo is None:
+        resets = resets.replace(tzinfo=dt.timezone.utc)
+    return resets > now
+
+
+def carry_forward(record: dict, previous: dict) -> dict:
+    """Keep the last good numbers when a provider fails transiently.
+
+    A stale percentage is still true until its window rolls over, and showing
+    it beats blanking a card because the network blinked. Once the window has
+    reset the figure describes a period that is over, so it is dropped.
+    """
+    if record.get("limits") or record.get("status") == au.STATUS_NOT_CONFIGURED:
+        return record
+    old = previous.get(record["id"]) if isinstance(previous, dict) else None
+    if not isinstance(old, dict):
+        return record
+    now = dt.datetime.now(dt.timezone.utc)
+    usable = [e for e in (old.get("limits") or []) if window_still_open(e, now)]
+    if not usable:
+        return record
+    record["limits"] = usable
+    record["stale"] = True
+    record["staleSince"] = old.get("updatedAt", "")
+    if not record.get("plan"):
+        record["plan"] = old.get("plan", "")
+    return record
+
+
+def snapshot_age_seconds() -> float:
+    try:
+        return time.time() - SNAPSHOT.stat().st_mtime
+    except OSError:
+        return float("inf")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Refresh the cached AI agent usage snapshot.")
+    parser.add_argument("--force", action="store_true", help="ignore every cache and re-probe each provider")
+    parser.add_argument("--max-age", type=float, default=0.0, metavar="SECONDS",
+                        help="do nothing if the snapshot is younger than this")
+    parser.add_argument("--provider", action="append", default=[], metavar="NAME",
+                        help="refresh only this provider (repeatable)")
+    parser.add_argument("--print", dest="print_result", action="store_true", help="also print the snapshot to stdout")
+    args = parser.parse_args()
+
+    if args.max_age > 0 and not args.force and snapshot_age_seconds() < args.max_age:
+        au.log(f"snapshot is fresh (< {args.max_age:.0f}s); skipping refresh")
+        if args.print_result:
+            sys.stdout.write(SNAPSHOT.read_text(encoding="utf-8"))
+        return 0
+
+    scripts = provider_scripts(set(args.provider))
+    if not scripts:
+        au.log("no provider collectors found")
+        return 1
+
+    previous = (au.read_json(SNAPSHOT) or {}).get("providers") or {}
+
+    providers = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(4, len(scripts))) as pool:
+        for agent_id, record in pool.map(lambda p: run_provider(p, args.force), scripts):
+            providers[agent_id] = carry_forward(record, previous)
+
+    # A single-provider refresh must not wipe the others out of the snapshot.
+    if args.provider:
+        merged = dict(previous)
+        merged.update(providers)
+        providers = merged
+
+    def sort_key(item):
+        agent_id = item[0]
+        rank = PREFERRED_ORDER.index(agent_id) if agent_id in PREFERRED_ORDER else len(PREFERRED_ORDER)
+        return (rank, agent_id)
+
+    snapshot = {
+        "schemaVersion": au.SCHEMA_VERSION,
+        "updatedAt": au.now_iso(),
+        "providers": dict(sorted(providers.items(), key=sort_key)),
+    }
+    au.write_json_atomic(SNAPSHOT, snapshot)
+    au.log(f"wrote {SNAPSHOT}")
+
+    if args.print_result:
+        json.dump(snapshot, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

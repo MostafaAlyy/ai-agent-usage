@@ -1,0 +1,20 @@
+[Unit]
+Description=Refresh the cached AI agent usage snapshot
+Documentation=file:%h/.local/share/agent-usage/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/agent-usage/agent-usage
+# The collector talks to provider endpoints and reads the CLI credential
+# stores; it needs nothing else from the system. ProtectHome is deliberately
+# NOT set: `codex app-server` writes inside $HOME while it runs, and a
+# read-only home makes it hang until the RPC times out.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryMax=256M
+TimeoutStartSec=90
