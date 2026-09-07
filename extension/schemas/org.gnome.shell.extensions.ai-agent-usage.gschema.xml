@@ -3,7 +3,7 @@
   <schema id="org.gnome.shell.extensions.ai-agent-usage"
           path="/org/gnome/shell/extensions/ai-agent-usage/">
     <key name="enabled-providers" type="as">
-      <default>['codex','claude']</default>
+      <default>['antigravity','codex','claude']</default>
       <summary>Providers to show</summary>
       <description>Identifiers of the agent providers rendered in the panel menu.</description>
     </key>

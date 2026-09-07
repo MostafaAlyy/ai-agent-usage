@@ -82,6 +82,24 @@ function formatResetStamp(iso) {
     return when.to_local().format('%a %H:%M') ?? '';
 }
 
+function formatRelativeUpdated(iso) {
+    if (!iso)
+        return 'never';
+    const when = GLib.DateTime.new_from_iso8601(iso, null);
+    if (!when)
+        return '--:--';
+    const diffSeconds = Math.max(0, GLib.DateTime.new_now_utc().difference(when.to_utc()) / 1000000);
+    if (diffSeconds < 60)
+        return 'just now';
+    const mins = Math.floor(diffSeconds / 60);
+    if (mins < 60)
+        return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24)
+        return `${hours}h ago`;
+    return formatClock(iso);
+}
+
 /* A percentage bar.
  *
  * The fill is placed in vfunc_allocate rather than by reacting to
@@ -416,7 +434,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
     _updateChrome() {
         this._busyLabel.visible = this._refreshing;
         this._refreshButton.reactive = !this._refreshing;
-        this._updatedLabel.text = `Last updated: ${formatClock(this._snapshot?.updatedAt)}`;
+        this._updatedLabel.text = `Updated ${formatRelativeUpdated(this._snapshot?.updatedAt)}`;
     }
 
     _render({force = false} = {}) {
@@ -482,15 +500,48 @@ class AgentUsageIndicator extends PanelMenu.Button {
         const card = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'aiu-card'});
 
         const titleRow = new St.BoxLayout({x_expand: true, style_class: 'aiu-card-header'});
+
+        // Provider icon with fallback to general AI agent icon
+        const iconPath = `${this._extension.path}/icons/${provider.id}-symbolic.svg`;
+        const hasIcon = GLib.file_test(iconPath, GLib.FileTest.EXISTS);
+        const iconFile = hasIcon ? iconPath : `${this._extension.path}/icons/ai-agent-symbolic.svg`;
+        titleRow.add_child(new St.Icon({
+            gicon: Gio.icon_new_for_string(iconFile),
+            style_class: `aiu-provider-icon aiu-icon-${provider.id}`,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+
         titleRow.add_child(new St.Label({
             text: provider.name ?? provider.id,
             style_class: 'aiu-provider',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
         }));
-        const badge = provider.plan || STATUS_TEXT[provider.status] || '';
-        if (badge)
-            titleRow.add_child(new St.Label({text: badge, style_class: 'aiu-badge', y_align: Clutter.ActorAlign.CENTER}));
+
+        // Semantic Badges: Plan, Stale/Cached, or Status
+        if (provider.plan) {
+            titleRow.add_child(new St.Label({
+                text: provider.plan,
+                style_class: 'aiu-badge aiu-badge-plan',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+
+        if (provider.stale) {
+            titleRow.add_child(new St.Label({
+                text: 'Cached',
+                style_class: 'aiu-badge aiu-badge-stale',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        } else if (provider.status && provider.status !== 'ok') {
+            const statusClass = provider.status === 'auth' ? 'aiu-badge-warning' : 'aiu-badge-error';
+            titleRow.add_child(new St.Label({
+                text: STATUS_TEXT[provider.status] ?? provider.status,
+                style_class: `aiu-badge ${statusClass}`,
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+
         card.add_child(titleRow);
 
         const limits = this._visibleLimits(provider);
@@ -505,7 +556,6 @@ class AgentUsageIndicator extends PanelMenu.Button {
         }
 
         if (limits.length === 0 && !provider.balance && provider.plan) {
-            // Without a plan the badge is already carrying the status text.
             const text = STATUS_TEXT[provider.status] ?? 'No usage reported';
             card.add_child(new St.Label({text, style_class: 'aiu-dim aiu-empty'}));
         }
@@ -542,7 +592,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
         if (entry.resetsAt && this._settings.get_boolean('show-countdown')) {
             const reset = new St.Label({style_class: 'aiu-dim aiu-reset'});
-            reset.text = `${formatCountdown(entry.resetsAt)} · ${formatResetStamp(entry.resetsAt)}`;
+            reset.text = `◷ ${formatCountdown(entry.resetsAt)} · ${formatResetStamp(entry.resetsAt)}`;
             this._countdownLabels.push({label: reset, resetsAt: entry.resetsAt});
             row.add_child(reset);
         }
@@ -604,7 +654,8 @@ class AgentUsageIndicator extends PanelMenu.Button {
                 continue;
             }
             const worst = limits.reduce((a, b) => (Number(b.percent) > Number(a.percent) ? b : a));
-            const window = String(worst.label ?? '').toLowerCase().includes('week') ? 'weekly' : 'session';
+            const label = String(worst.label ?? '').toLowerCase();
+            const window = label.includes('week') ? 'weekly' : (label.includes('5-hour') || label.includes('5h')) ? '5h' : 'session';
             parts.push(`${provider.name} ${Math.round(Number(worst.percent))}% ${window}`);
         }
         return parts.join(' • ');

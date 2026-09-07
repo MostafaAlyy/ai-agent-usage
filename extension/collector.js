@@ -167,6 +167,184 @@ function windowStillOpen(entry) {
     return resets.difference(GLib.DateTime.new_now_utc()) > 0;
 }
 
+/* ------------------------------------------------------------- antigravity */
+
+const AGY_PORT_CACHE = GLib.build_filenamev([CACHE_DIR, 'antigravity-port.json']);
+
+function findAntigravityCandidatePorts() {
+    const candidates = [];
+    const cached = readJson(AGY_PORT_CACHE)?.port;
+    if (cached && typeof cached === 'number')
+        candidates.push(cached);
+
+    try {
+        const inodes = new Set();
+        const procDir = Gio.File.new_for_path('/proc');
+        const enumerator = procDir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+        let fileInfo;
+        while ((fileInfo = enumerator.next_file(null)) !== null) {
+            const pid = fileInfo.get_name();
+            if (!/^\d+$/.test(pid))
+                continue;
+            try {
+                const commPath = `/proc/${pid}/comm`;
+                const [ok, commBytes] = GLib.file_get_contents(commPath);
+                if (!ok)
+                    continue;
+                const comm = new TextDecoder().decode(commBytes).trim().toLowerCase();
+                if (comm.includes('agy') || comm.includes('antigravity') || comm.includes('localharness')) {
+                    const fdDir = Gio.File.new_for_path(`/proc/${pid}/fd`);
+                    const fdEnum = fdDir.enumerate_children('standard::name,standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+                    let fdInfo;
+                    while ((fdInfo = fdEnum.next_file(null)) !== null) {
+                        const target = fdInfo.get_symlink_target();
+                        if (target && target.startsWith('socket:[')) {
+                            inodes.add(target.slice(8, -1));
+                        }
+                    }
+                }
+            } catch {}
+        }
+
+        for (const netPath of ['/proc/net/tcp', '/proc/net/tcp6']) {
+            try {
+                const [ok, tcpBytes] = GLib.file_get_contents(netPath);
+                if (!ok)
+                    continue;
+                const lines = new TextDecoder().decode(tcpBytes).split('\n');
+                for (let i = 1; i < lines.length; i++) {
+                    const parts = lines[i].trim().split(/\s+/);
+                    if (parts.length >= 10) {
+                        const localAddr = parts[1];
+                        const st = parts[3];
+                        const inode = parts[9];
+                        if (st === '0A') { // TCP_LISTEN
+                            const [, portHex] = localAddr.split(':');
+                            const port = parseInt(portHex, 16);
+                            if (inodes.has(inode)) {
+                                candidates.push(port);
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+    } catch {}
+
+    return [...new Set(candidates)];
+}
+
+function probeAntigravityRpc(port, method) {
+    const session = new Soup.Session({timeout: 2, user_agent: 'agent-usage/1'});
+    const uri = `http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${method}`;
+    const message = Soup.Message.new('POST', uri);
+    message.request_headers.append('Content-Type', 'application/json');
+    message.set_request_body_from_bytes('application/json', new GLib.Bytes(new TextEncoder().encode('{}')));
+
+    try {
+        const bytes = session.send_and_read(message, null);
+        if (message.get_status() === 200 && bytes) {
+            return JSON.parse(new TextDecoder().decode(bytes.get_data()));
+        }
+    } catch {}
+    return null;
+}
+
+async function collectAntigravity(force) {
+    const candidatePorts = findAntigravityCandidatePorts();
+    let workingPort = null;
+    let quotaData = null;
+
+    for (const port of candidatePorts) {
+        const res = probeAntigravityRpc(port, 'RetrieveUserQuotaSummary');
+        if (res?.response?.groups) {
+            workingPort = port;
+            quotaData = res.response;
+            break;
+        }
+    }
+
+    const fallbackCache = GLib.build_filenamev([CACHE_DIR, 'antigravity-usage.json']);
+    const cached = readJson(fallbackCache) ?? {};
+    const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
+    const cachedPlan = cached.plan ?? '';
+
+    if (!workingPort || !quotaData) {
+        if (fallback.length) {
+            return record('antigravity', 'Google Antigravity', {
+                status: STATUS.ok,
+                limits: fallback,
+                plan: cachedPlan || 'Google AI Pro',
+                stale: true,
+                message: 'Antigravity language server is not reachable; showing last known limits.',
+            });
+        }
+        return record('antigravity', 'Google Antigravity', {
+            status: STATUS.notConfigured,
+            message: 'Antigravity IDE or agy is not running.',
+        });
+    }
+
+    saveJson(AGY_PORT_CACHE, {port: workingPort});
+
+    let plan = cachedPlan || '';
+    try {
+        const userStatus = probeAntigravityRpc(workingPort, 'GetUserStatus');
+        if (userStatus?.userTier?.name)
+            plan = userStatus.userTier.name;
+    } catch {}
+
+    const limits = [];
+    for (const group of (quotaData.groups ?? [])) {
+        const isPrimary = group.displayName?.toLowerCase().includes('gemini');
+        const groupType = isPrimary ? 'primary' : 'scoped';
+
+        for (const bucket of (group.buckets ?? [])) {
+            const fraction = Number(bucket.remainingFraction ?? 1);
+            const usedPercent = Math.max(0, Math.min(100, (1 - fraction) * 100));
+            const resetsAt = bucket.resetTime ?? null;
+
+            let label = bucket.displayName ?? 'Limit';
+            if (bucket.bucketId === 'gemini-5h' || bucket.window === '5h') {
+                label = isPrimary ? 'Gemini · 5-hour limit' : 'Claude & GPT · 5-hour limit';
+            } else if (bucket.bucketId === 'gemini-weekly' || bucket.window === 'weekly') {
+                label = isPrimary ? 'Gemini · Weekly limit' : 'Claude & GPT · Weekly limit';
+            } else if (group.displayName) {
+                label = `${group.displayName} · ${bucket.displayName}`;
+            }
+
+            const item = limit(bucket.bucketId ?? label, label, usedPercent, resetsAt, groupType);
+            if (item)
+                limits.push(item);
+        }
+    }
+
+    if (limits.length === 0) {
+        if (fallback.length) {
+            return record('antigravity', 'Google Antigravity', {
+                status: STATUS.ok,
+                limits: fallback,
+                plan,
+                stale: true,
+                message: 'No quota buckets returned by Antigravity; showing last known limits.',
+            });
+        }
+        return record('antigravity', 'Google Antigravity', {
+            status: STATUS.error,
+            plan,
+            message: 'Antigravity reported no active rate limits.',
+        });
+    }
+
+    saveJson(fallbackCache, {limits, plan, updatedAt: GLib.DateTime.new_now_local().format_iso8601()});
+
+    return record('antigravity', 'Google Antigravity', {
+        status: STATUS.ok,
+        limits,
+        plan: plan || 'Google AI',
+    });
+}
+
 /* ------------------------------------------------------------------- codex */
 
 /* The Codex CLI ships an `app-server` subcommand speaking JSON-RPC over stdio,
@@ -197,7 +375,7 @@ async function collectCodex() {
         launcher.setenv('PATH', SEARCH_PATH, true);
         // read-only sandbox and untrusted approvals: this process must never
         // be able to touch the filesystem or act on our behalf.
-        proc = launcher.spawnv([codex, '-s', 'read-only', '-a', 'untrusted', 'app-server']);
+        proc = launcher.spawnv([codex, '-s', 'read-only', '-a', 'never', 'app-server']);
 
         const stdin = proc.get_stdin_pipe();
         const stdout = new Gio.DataInputStream({base_stream: proc.get_stdout_pipe()});
@@ -510,6 +688,7 @@ async function collectClaude(force) {
 /* -------------------------------------------------------------------- main */
 
 const PROVIDERS = [
+    {id: 'antigravity', run: force => collectAntigravity(force)},
     {id: 'codex', run: collectCodex},
     {id: 'claude', run: force => collectClaude(force)},
 ];

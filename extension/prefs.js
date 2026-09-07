@@ -9,6 +9,7 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const PROVIDERS = [
+    {id: 'antigravity', title: 'Google Antigravity', subtitle: 'Read from local Antigravity IDE / agy language server'},
     {id: 'codex', title: 'OpenAI Codex', subtitle: 'Read from the local codex CLI'},
     {id: 'claude', title: 'Claude Code', subtitle: 'Read from the Claude Code sign-in'},
 ];

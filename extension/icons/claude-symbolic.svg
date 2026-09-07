@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="currentColor">
+    <!-- Claude / Anthropic spark emblem -->
+    <path d="M7 1.5 a1 1 0 0 1 2 0 v3.2 a1 1 0 0 1 -2 0 Z"/>
+    <path d="M7 11.3 a1 1 0 0 1 2 0 v3.2 a1 1 0 0 1 -2 0 Z"/>
+    <path d="M1.5 7 a1 1 0 0 1 0 -2 h3.2 a1 1 0 0 1 0 2 Z"/>
+    <path d="M11.3 7 a1 1 0 0 1 0 -2 h3.2 a1 1 0 0 1 0 2 Z"/>
+    <path d="M3.4 3.4 a1 1 0 0 1 1.4 0 l2.3 2.3 a1 1 0 0 1 -1.4 1.4 L3.4 4.8 a1 1 0 0 1 0 -1.4 Z"/>
+    <path d="M10.3 10.3 a1 1 0 0 1 1.4 0 l2.3 2.3 a1 1 0 0 1 -1.4 1.4 l-2.3 -2.3 a1 1 0 0 1 0 -1.4 Z"/>
+    <path d="M12.6 3.4 a1 1 0 0 1 0 1.4 l-2.3 2.3 a1 1 0 0 1 -1.4 -1.4 l2.3 -2.3 a1 1 0 0 1 1.4 0 Z"/>
+    <path d="M5.7 10.3 a1 1 0 0 1 0 1.4 l-2.3 2.3 a1 1 0 0 1 -1.4 -1.4 l2.3 -2.3 a1 1 0 0 1 1.4 0 Z"/>
+    <circle cx="8" cy="8" r="1.8"/>
+  </g>
+</svg>
