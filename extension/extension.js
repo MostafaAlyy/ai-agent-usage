@@ -73,6 +73,25 @@ function formatCountdown(iso) {
     return `Resets in ${Math.max(minutes, 1)}m`;
 }
 
+function formatCountdownShort(iso) {
+    if (!iso)
+        return '';
+    const when = GLib.DateTime.new_from_iso8601(iso, null);
+    if (!when)
+        return '';
+    const seconds = when.difference(GLib.DateTime.new_now_utc()) / 1000000;
+    if (seconds <= 0)
+        return 'now';
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (days > 0)
+        return `in ${days}d ${hours}h`;
+    if (hours > 0)
+        return `in ${hours}h ${minutes}m`;
+    return `in ${Math.max(minutes, 1)}m`;
+}
+
 function formatResetStamp(iso) {
     if (!iso)
         return '';
@@ -465,9 +484,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
         } else if (providers.length === 0) {
             this._body.addMenuItem(this._noticeItem('No providers enabled.', 'Enable one in the extension preferences.'));
         } else {
-            providers.forEach((provider, index) => {
-                if (index > 0)
-                    this._body.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            providers.forEach(provider => {
                 this._addProvider(provider);
             });
         }
@@ -560,10 +577,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
             card.add_child(new St.Label({text, style_class: 'aiu-dim aiu-empty'}));
         }
 
-        if (provider.stale)
-            card.add_child(new St.Label({text: 'Showing the last known figures.', style_class: 'aiu-dim aiu-note'}));
-
-        if (provider.message) {
+        if (provider.message && !provider.stale && limits.length === 0) {
             const note = new St.Label({text: provider.message, style_class: 'aiu-dim aiu-note aiu-wrap'});
             note.clutter_text.line_wrap = true;
             card.add_child(note);
@@ -579,9 +593,25 @@ class AgentUsageIndicator extends PanelMenu.Button {
         const row = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'aiu-limit'});
 
         const head = new St.BoxLayout({x_expand: true, style_class: 'aiu-limit-header'});
-        const label = new St.Label({text: entry.label ?? 'Limit', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        const label = new St.Label({
+            text: entry.label ?? 'Limit',
+            style_class: 'aiu-limit-label',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
         label.clutter_text.ellipsize = 3; /* Pango.EllipsizeMode.END */
         head.add_child(label);
+
+        if (entry.resetsAt && this._settings.get_boolean('show-countdown')) {
+            const countdown = new St.Label({
+                text: formatCountdownShort(entry.resetsAt),
+                style_class: 'aiu-dim aiu-countdown-inline',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._countdownLabels.push({label: countdown, resetsAt: entry.resetsAt});
+            head.add_child(countdown);
+        }
+
         head.add_child(new St.Label({
             text: `${Math.round(percent)}%`,
             style_class: `aiu-value${severity ? ` aiu-${severity}` : ''}`,
@@ -590,12 +620,6 @@ class AgentUsageIndicator extends PanelMenu.Button {
         row.add_child(head);
         row.add_child(new UsageBar(percent / 100, severity));
 
-        if (entry.resetsAt && this._settings.get_boolean('show-countdown')) {
-            const reset = new St.Label({style_class: 'aiu-dim aiu-reset'});
-            reset.text = `◷ ${formatCountdown(entry.resetsAt)} · ${formatResetStamp(entry.resetsAt)}`;
-            this._countdownLabels.push({label: reset, resetsAt: entry.resetsAt});
-            row.add_child(reset);
-        }
         return row;
     }
 
@@ -717,7 +741,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
     _tickCountdowns() {
         for (const {label, resetsAt} of this._countdownLabels)
-            label.text = `${formatCountdown(resetsAt)} · ${formatResetStamp(resetsAt)}`;
+            label.text = formatCountdownShort(resetsAt);
     }
 
     _onDestroy() {

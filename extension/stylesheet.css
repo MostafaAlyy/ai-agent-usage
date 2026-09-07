@@ -6,42 +6,44 @@
  * Only the two alert states introduce a hue of their own, and both are muted. */
 
 .aiu-panel-box {
-  spacing: 5px;
+  spacing: 4px;
 }
 
 .aiu-panel-label {
-  font-size: 0.9em;
+  font-size: 0.85em;
   font-feature-settings: "tnum";
 }
 
 .aiu-item {
-  padding: 4px 16px;
+  padding: 2px 10px;
 }
 
 .aiu-header {
-  spacing: 8px;
+  spacing: 6px;
+  padding: 2px 0;
 }
 
 .aiu-title {
   font-weight: 700;
-  font-size: 1.05em;
+  font-size: 0.95em;
 }
 
 .aiu-card {
-  spacing: 8px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  spacing: 5px;
+  padding: 7px 10px;
+  border-radius: 9px;
   background-color: rgba(127, 127, 127, 0.08);
-  border: 1px solid rgba(127, 127, 127, 0.14);
+  border: 1px solid rgba(127, 127, 127, 0.12);
+  margin-bottom: 4px;
 }
 
 .aiu-card-header {
-  spacing: 8px;
-  padding-bottom: 2px;
+  spacing: 6px;
+  padding-bottom: 1px;
 }
 
 .aiu-provider-icon {
-  icon-size: 16px;
+  icon-size: 15px;
   margin-right: 2px;
 }
 
@@ -59,70 +61,75 @@
 
 .aiu-provider {
   font-weight: 700;
-  font-size: 0.95em;
+  font-size: 0.88em;
 }
 
 .aiu-badge {
-  font-size: 0.75em;
+  font-size: 0.70em;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 999px;
   background-color: rgba(127, 127, 127, 0.18);
 }
 
 .aiu-badge-plan {
-  background-color: rgba(53, 132, 228, 0.20);
+  background-color: rgba(53, 132, 228, 0.18);
   color: #78aeed;
 }
 
 .aiu-badge-stale {
   background-color: rgba(127, 127, 127, 0.22);
-  color: rgba(210, 210, 210, 0.9);
+  color: rgba(200, 200, 200, 0.85);
 }
 
 .aiu-badge-warning {
-  background-color: rgba(229, 165, 10, 0.22);
+  background-color: rgba(229, 165, 10, 0.20);
   color: #f5c211;
 }
 
 .aiu-badge-error {
-  background-color: rgba(224, 27, 36, 0.22);
+  background-color: rgba(224, 27, 36, 0.20);
   color: #ff7b63;
 }
 
 .aiu-limit {
-  spacing: 4px;
-  padding-top: 2px;
+  spacing: 2px;
+  padding: 2px 0 1px 0;
 }
 
 .aiu-limit-header {
-  spacing: 10px;
+  spacing: 6px;
+}
+
+.aiu-limit-label {
+  font-size: 0.82em;
+}
+
+.aiu-countdown-inline {
+  font-size: 0.75em;
+  color: rgba(140, 140, 140, 0.85);
+  margin-right: 4px;
+  font-feature-settings: "tnum";
 }
 
 .aiu-value {
   font-feature-settings: "tnum";
   font-weight: 700;
-  font-size: 0.9em;
+  font-size: 0.82em;
 }
 
 .aiu-bar-track {
-  height: 7px;
-  border-radius: 4px;
+  height: 4px;
+  border-radius: 2px;
   background-color: rgba(127, 127, 127, 0.22);
 }
 
 .aiu-bar-fill {
-  border-radius: 4px;
+  border-radius: 2px;
   background-color: -st-accent-color;
 }
 
-/* Alert colours come from the Adwaita palette rather than being invented, and
- * they split by surface. A bar sits on a neutral track, so the bright pair
- * reads well against either theme. Text and the panel glyph sit directly on
- * the theme background, where the bright yellow drops to roughly 2:1 contrast
- * on a light panel -- so those use the darker pair, which clears 4.5:1 on
- * light and stays legible on dark. St has no media queries, so one value has
- * to serve both themes. */
+/* Alert colours come from the Adwaita palette */
 .aiu-bar-fill.aiu-warning {
   background-color: #e5a50a;
 }
@@ -142,72 +149,69 @@
 }
 
 .aiu-dim {
-  color: rgba(140, 140, 140, 0.95);
-  font-size: 0.85em;
-}
-
-.aiu-reset {
-  padding-top: 1px;
-  font-size: 0.8em;
   color: rgba(135, 135, 135, 0.9);
+  font-size: 0.80em;
 }
 
 .aiu-note,
 .aiu-empty {
-  padding-top: 3px;
+  padding-top: 2px;
+  font-size: 0.78em;
 }
 
 .aiu-wrap {
-  max-width: 290px;
+  max-width: 270px;
 }
 
 .aiu-notice {
   font-weight: 700;
+  font-size: 0.85em;
 }
 
 .aiu-footer {
   spacing: 6px;
-  padding-top: 4px;
+  padding-top: 2px;
+  padding-bottom: 1px;
 }
 
 .aiu-button {
-  padding: 4px 10px;
-  border-radius: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
 }
 
 .aiu-button:hover,
 .aiu-button:focus {
-  background-color: rgba(127, 127, 127, 0.20);
+  background-color: rgba(127, 127, 127, 0.18);
 }
 
 .aiu-button:active {
-  background-color: rgba(127, 127, 127, 0.30);
+  background-color: rgba(127, 127, 127, 0.28);
 }
 
 .aiu-button:insensitive {
-  color: rgba(127, 127, 127, 0.6);
+  color: rgba(127, 127, 127, 0.5);
 }
 
 .aiu-button-box {
-  spacing: 6px;
+  spacing: 4px;
 }
 
 .aiu-button-icon {
-  icon-size: 16px;
+  icon-size: 14px;
 }
 
 .aiu-icon-button {
-  padding: 4px 8px;
+  padding: 3px 6px;
 }
 
 .aiu-tooltip {
   background-color: rgba(0, 0, 0, 0.88);
   color: #ffffff;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 0.9em;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 0.85em;
 }
 
 .popup-menu-content .aiu-item {
-  min-width: 320px;
+  min-width: 290px;
 }

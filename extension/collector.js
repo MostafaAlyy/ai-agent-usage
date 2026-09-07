@@ -113,13 +113,13 @@ function isoOrNull(value) {
 function windowLabel(minutes) {
     const mins = Number(minutes) || 0;
     if (mins === 10080)
-        return 'Weekly limit';
+        return 'Weekly';
     if (mins === 1440)
-        return 'Daily limit';
+        return 'Daily';
     if (mins && mins % 60 === 0)
-        return `${mins / 60}-hour limit`;
+        return `${mins / 60}h`;
     if (mins)
-        return `${mins}-minute limit`;
+        return `${mins}m`;
     return 'Limit';
 }
 
@@ -306,9 +306,9 @@ async function collectAntigravity(force) {
 
             let label = bucket.displayName ?? 'Limit';
             if (bucket.bucketId === 'gemini-5h' || bucket.window === '5h') {
-                label = isPrimary ? 'Gemini · 5-hour limit' : 'Claude & GPT · 5-hour limit';
+                label = isPrimary ? 'Gemini · 5h' : 'Claude & GPT · 5h';
             } else if (bucket.bucketId === 'gemini-weekly' || bucket.window === 'weekly') {
-                label = isPrimary ? 'Gemini · Weekly limit' : 'Claude & GPT · Weekly limit';
+                label = isPrimary ? 'Gemini · Weekly' : 'Claude & GPT · Weekly';
             } else if (group.displayName) {
                 label = `${group.displayName} · ${bucket.displayName}`;
             }
@@ -438,11 +438,12 @@ async function collectCodex() {
 
         const windows = (prefix, title, bucket) => {
             const out = [];
+            const cleanTitle = title.replace(/^GPT-[\d.]+-Codex-/, '').trim();
             for (const slot of ['primary', 'secondary']) {
                 const win = bucket?.[slot];
                 if (!win)
                     continue;
-                const label = title ? `${title} · ${windowLabel(win.windowDurationMins)}` : windowLabel(win.windowDurationMins);
+                const label = cleanTitle ? `${cleanTitle} · ${windowLabel(win.windowDurationMins)}` : windowLabel(win.windowDurationMins);
                 out.push(limit(`${prefix}.${slot}`, label, win.usedPercent, win.resetsAt, title ? 'scoped' : 'primary'));
             }
             return out.filter(entry => entry);
@@ -528,11 +529,11 @@ function planLabel(tier, subscription) {
 function scopedWindow(kind) {
     const text = String(kind ?? '').toLowerCase();
     if (text.includes('month'))
-        return 'Monthly limit';
+        return 'Monthly';
     if (text.includes('week') || text.includes('day'))
-        return 'Weekly limit';
+        return 'Weekly';
     if (text.includes('hour') || text.includes('session'))
-        return 'Session limit';
+        return '5h';
     return '';
 }
 
@@ -601,12 +602,12 @@ function probeClaudeUsage(accessToken) {
     const limits = [];
 
     if (payload.five_hour) {
-        limits.push(limit('session', '5-hour limit',
+        limits.push(limit('session', '5h',
             asPercent(payload.five_hour.utilization, isPercent), payload.five_hour.resets_at));
     }
     const weekly = payload.seven_day_oauth_apps ?? payload.seven_day;
     if (weekly)
-        limits.push(limit('weekly', 'Weekly limit', asPercent(weekly.utilization, isPercent), weekly.resets_at));
+        limits.push(limit('weekly', 'Weekly', asPercent(weekly.utilization, isPercent), weekly.resets_at));
 
     /* Model-scoped allowances only ever appear in the `limits` array -- the
      * matching flat keys (seven_day_opus, ...) stay null even when the account
