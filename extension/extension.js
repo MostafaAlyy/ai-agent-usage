@@ -38,25 +38,6 @@ const STATUS_TEXT = {
     error: 'Unavailable',
 };
 
-/* Status dot colour per provider state, shown in the controls list. */
-const STATUS_DOT = {
-    ok: 'aiu-dot-ok',
-    not_configured: 'aiu-dot-off',
-    auth: 'aiu-dot-warn',
-    error: 'aiu-dot-error',
-};
-
-/* Providers known to this version of the extension, in display order. The
- * snapshot is the source of truth for data, but a provider the collector has
- * never reported (fresh install, first run still pending) still needs a
- * control row so it can be switched off without opening Preferences. */
-const KNOWN_PROVIDERS = [
-    {id: 'antigravity', name: 'Google Antigravity'},
-    {id: 'codex', name: 'Codex'},
-    {id: 'claude', name: 'Claude Code'},
-    {id: 'opencode-go', name: 'OpenCode Go'},
-];
-
 /* The schema default grew an entry in this version. A user who never touched
  * the setting gets the new default automatically; a user whose stored value
  * is exactly the previous default gets the new provider appended once. */
@@ -213,13 +194,10 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
         this._header = new PopupMenu.PopupMenuSection();
         this._body = new PopupMenu.PopupMenuSection();
-        this._controls = new PopupMenu.PopupMenuSection();
         this._footer = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._header);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._body);
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this.menu.addMenuItem(this._controls);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._footer);
         this._buildChrome();
@@ -436,49 +414,6 @@ class AgentUsageIndicator extends PanelMenu.Button {
             .map(id => providers[id]);
     }
 
-    /* Every provider the menu knows about: the snapshot's data first, then a
-     * placeholder for any enabled id the collector has never reported, so its
-     * switch is still reachable. Unknown ids from the snapshot (a newer
-     * collector than this UI) are appended rather than dropped. */
-    _allKnownProviders() {
-        const wanted = this._settings.get_strv('enabled-providers');
-        const providers = this._snapshot?.providers ?? {};
-        const seen = new Set();
-        const out = [];
-        for (const {id, name} of KNOWN_PROVIDERS) {
-            seen.add(id);
-            out.push(providers[id] ?? {id, name, status: 'error', limits: [], message: '', updatedAt: null});
-        }
-        for (const id of Object.keys(providers)) {
-            if (!seen.has(id)) {
-                seen.add(id);
-                out.push(providers[id]);
-            }
-        }
-        for (const id of wanted) {
-            if (!seen.has(id)) {
-                seen.add(id);
-                out.push({id, name: id, status: 'error', limits: [], message: '', updatedAt: null});
-            }
-        }
-        return out;
-    }
-
-    _isProviderEnabled(id) {
-        return this._settings.get_strv('enabled-providers').includes(id);
-    }
-
-    /* One switch adds or removes its own id, same contract as Preferences. */
-    _setProviderEnabled(id, enabled) {
-        const order = this._allKnownProviders().map(entry => entry.id);
-        const current = new Set(this._settings.get_strv('enabled-providers'));
-        if (enabled)
-            current.add(id);
-        else
-            current.delete(id);
-        this._settings.set_strv('enabled-providers', order.filter(entry => current.has(entry)));
-    }
-
     _visibleLimits(provider) {
         const limits = provider.limits ?? [];
         if (this._settings.get_boolean('show-scoped-limits'))
@@ -587,73 +522,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
                 `${this._startupErrors.join(', ')}. See: journalctl --user -b /usr/bin/gnome-shell`));
         }
 
-        this._renderControls();
         this._updatePanel();
-    }
-
-    /* The quick controllers: one row per provider with a status dot and an
-     * on/off switch, so enabling Claude or disabling anything else never
-     * needs a trip to Preferences. Rebuilt with the cards because the set of
-     * known providers only changes when the data does. */
-    _renderControls() {
-        this._controls.removeAll();
-
-        const titleItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'aiu-item'});
-        titleItem.add_child(new St.Label({text: 'Providers', style_class: 'aiu-section-title', x_expand: true}));
-        this._controls.addMenuItem(titleItem);
-
-        for (const provider of this._allKnownProviders()) {
-            const id = provider.id;
-            const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'aiu-item'});
-            const row = new St.BoxLayout({x_expand: true, style_class: 'aiu-control-row'});
-
-            const dotClass = provider.stale ? 'aiu-dot-stale' : (STATUS_DOT[provider.status] ?? 'aiu-dot-error');
-            row.add_child(new St.Widget({style_class: `aiu-dot ${dotClass}`, y_align: Clutter.ActorAlign.CENTER}));
-            const name = new St.Label({
-                text: provider.name ?? id,
-                style_class: 'aiu-control-name',
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            name.clutter_text.ellipsize = 3; /* Pango.EllipsizeMode.END */
-            row.add_child(name);
-
-            const hint = provider.stale ? 'Cached'
-                : (provider.status && provider.status !== 'ok' ? (STATUS_TEXT[provider.status] ?? provider.status) : '');
-            if (hint) {
-                row.add_child(new St.Label({
-                    text: hint,
-                    style_class: 'aiu-dim aiu-control-hint',
-                    y_align: Clutter.ActorAlign.CENTER,
-                }));
-            }
-
-            const toggle = new St.Button({
-                style_class: 'aiu-switch aiu-switch-on',
-                can_focus: true,
-                toggle_mode: true,
-                y_align: Clutter.ActorAlign.CENTER,
-                child: new St.Widget({style_class: 'aiu-switch-knob'}),
-            });
-            toggle.set_checked(this._isProviderEnabled(id));
-            this._syncSwitchStyle(toggle);
-            toggle.connect('clicked', () => {
-                /* With toggle_mode the button has already flipped by the
-                 * time clicked fires; the settings listener re-renders. */
-                this._setProviderEnabled(id, toggle.checked);
-            });
-            toggle.accessible_name = `Show ${provider.name ?? id} in the menu`;
-            row.add_child(toggle);
-
-            item.add_child(row);
-            this._controls.addMenuItem(item);
-        }
-    }
-
-    _syncSwitchStyle(toggle) {
-        toggle.remove_style_class_name(toggle.checked ? 'aiu-switch-off' : 'aiu-switch-on');
-        toggle.add_style_class_name(toggle.checked ? 'aiu-switch-on' : 'aiu-switch-off');
-        toggle.get_child()?.set_x_align(toggle.checked ? Clutter.ActorAlign.END : Clutter.ActorAlign.START);
     }
 
     _noticeItem(title, subtitle) {
