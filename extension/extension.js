@@ -38,6 +38,31 @@ const STATUS_TEXT = {
     error: 'Unavailable',
 };
 
+/* Status dot colour per provider state, shown in the controls list. */
+const STATUS_DOT = {
+    ok: 'aiu-dot-ok',
+    not_configured: 'aiu-dot-off',
+    auth: 'aiu-dot-warn',
+    error: 'aiu-dot-error',
+};
+
+/* Providers known to this version of the extension, in display order. The
+ * snapshot is the source of truth for data, but a provider the collector has
+ * never reported (fresh install, first run still pending) still needs a
+ * control row so it can be switched off without opening Preferences. */
+const KNOWN_PROVIDERS = [
+    {id: 'antigravity', name: 'Google Antigravity'},
+    {id: 'codex', name: 'Codex'},
+    {id: 'claude', name: 'Claude Code'},
+    {id: 'opencode-go', name: 'OpenCode Go'},
+];
+
+/* The schema default grew an entry in this version. A user who never touched
+ * the setting gets the new default automatically; a user whose stored value
+ * is exactly the previous default gets the new provider appended once. */
+const PROVIDERS_DEFAULT_OLD = ['antigravity', 'codex', 'claude'];
+const PROVIDERS_DEFAULT_NEW = [...PROVIDERS_DEFAULT_OLD, 'opencode-go'];
+
 function log_(message) {
     console.log(`[ai-agent-usage] ${message}`);
 }
@@ -167,6 +192,10 @@ class AgentUsageIndicator extends PanelMenu.Button {
         this._countdownId = 0;
         this._tooltip = null;
         this._tooltipId = 0;
+        /* Card collapse state is session-only: it is a glance preference, not
+         * a setting worth syncing. */
+        this._collapsed = new Set();
+        this._updatedLabels = [];
 
         const box = new St.BoxLayout({style_class: 'panel-status-menu-box aiu-panel-box'});
         this._icon = new St.Icon({
@@ -184,10 +213,13 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
         this._header = new PopupMenu.PopupMenuSection();
         this._body = new PopupMenu.PopupMenuSection();
+        this._controls = new PopupMenu.PopupMenuSection();
         this._footer = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._header);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._body);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this.menu.addMenuItem(this._controls);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._footer);
         this._buildChrome();
@@ -214,11 +246,26 @@ class AgentUsageIndicator extends PanelMenu.Button {
         this._guard('D-Bus interface', () => this._exportDBus());
         this._guard('file monitor', () => this._watchSnapshot());
         this._guard('initial read', () => this._loadSnapshot());
+        this._guard('provider defaults', () => this._migrateProviderDefaults());
         this._guard('refresh timer', () => this._scheduleRefresh());
         /* Data may be from before suspend or from a login that predates the
          * collector's first timer run, so ask for a refresh once at start. */
         this._guard('initial refresh', () => this._runCollector(false));
         this._guard('first paint', () => this._render({force: true}));
+    }
+
+    _migrateProviderDefaults() {
+        let current;
+        try {
+            current = this._settings.get_strv('enabled-providers');
+        } catch {
+            return;
+        }
+        if (current.length === PROVIDERS_DEFAULT_OLD.length &&
+            PROVIDERS_DEFAULT_OLD.every(id => current.includes(id))) {
+            this._settings.set_strv('enabled-providers', PROVIDERS_DEFAULT_NEW);
+            log_('enabled-providers migrated to include opencode-go');
+        }
     }
 
     /* Run one startup step, and turn a failure into a logged note rather than
@@ -389,6 +436,49 @@ class AgentUsageIndicator extends PanelMenu.Button {
             .map(id => providers[id]);
     }
 
+    /* Every provider the menu knows about: the snapshot's data first, then a
+     * placeholder for any enabled id the collector has never reported, so its
+     * switch is still reachable. Unknown ids from the snapshot (a newer
+     * collector than this UI) are appended rather than dropped. */
+    _allKnownProviders() {
+        const wanted = this._settings.get_strv('enabled-providers');
+        const providers = this._snapshot?.providers ?? {};
+        const seen = new Set();
+        const out = [];
+        for (const {id, name} of KNOWN_PROVIDERS) {
+            seen.add(id);
+            out.push(providers[id] ?? {id, name, status: 'error', limits: [], message: '', updatedAt: null});
+        }
+        for (const id of Object.keys(providers)) {
+            if (!seen.has(id)) {
+                seen.add(id);
+                out.push(providers[id]);
+            }
+        }
+        for (const id of wanted) {
+            if (!seen.has(id)) {
+                seen.add(id);
+                out.push({id, name: id, status: 'error', limits: [], message: '', updatedAt: null});
+            }
+        }
+        return out;
+    }
+
+    _isProviderEnabled(id) {
+        return this._settings.get_strv('enabled-providers').includes(id);
+    }
+
+    /* One switch adds or removes its own id, same contract as Preferences. */
+    _setProviderEnabled(id, enabled) {
+        const order = this._allKnownProviders().map(entry => entry.id);
+        const current = new Set(this._settings.get_strv('enabled-providers'));
+        if (enabled)
+            current.add(id);
+        else
+            current.delete(id);
+        this._settings.set_strv('enabled-providers', order.filter(entry => current.has(entry)));
+    }
+
     _visibleLimits(provider) {
         const limits = provider.limits ?? [];
         if (this._settings.get_boolean('show-scoped-limits'))
@@ -470,6 +560,7 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
         this._body.removeAll();
         this._countdownLabels = [];
+        this._updatedLabels = [];
 
         const providers = this._enabledProviders();
         if (!this._snapshot && !this._collectorInstalled()) {
@@ -496,7 +587,73 @@ class AgentUsageIndicator extends PanelMenu.Button {
                 `${this._startupErrors.join(', ')}. See: journalctl --user -b /usr/bin/gnome-shell`));
         }
 
+        this._renderControls();
         this._updatePanel();
+    }
+
+    /* The quick controllers: one row per provider with a status dot and an
+     * on/off switch, so enabling Claude or disabling anything else never
+     * needs a trip to Preferences. Rebuilt with the cards because the set of
+     * known providers only changes when the data does. */
+    _renderControls() {
+        this._controls.removeAll();
+
+        const titleItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'aiu-item'});
+        titleItem.add_child(new St.Label({text: 'Providers', style_class: 'aiu-section-title', x_expand: true}));
+        this._controls.addMenuItem(titleItem);
+
+        for (const provider of this._allKnownProviders()) {
+            const id = provider.id;
+            const item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'aiu-item'});
+            const row = new St.BoxLayout({x_expand: true, style_class: 'aiu-control-row'});
+
+            const dotClass = provider.stale ? 'aiu-dot-stale' : (STATUS_DOT[provider.status] ?? 'aiu-dot-error');
+            row.add_child(new St.Widget({style_class: `aiu-dot ${dotClass}`, y_align: Clutter.ActorAlign.CENTER}));
+            const name = new St.Label({
+                text: provider.name ?? id,
+                style_class: 'aiu-control-name',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            name.clutter_text.ellipsize = 3; /* Pango.EllipsizeMode.END */
+            row.add_child(name);
+
+            const hint = provider.stale ? 'Cached'
+                : (provider.status && provider.status !== 'ok' ? (STATUS_TEXT[provider.status] ?? provider.status) : '');
+            if (hint) {
+                row.add_child(new St.Label({
+                    text: hint,
+                    style_class: 'aiu-dim aiu-control-hint',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+            }
+
+            const toggle = new St.Button({
+                style_class: 'aiu-switch aiu-switch-on',
+                can_focus: true,
+                toggle_mode: true,
+                y_align: Clutter.ActorAlign.CENTER,
+                child: new St.Widget({style_class: 'aiu-switch-knob'}),
+            });
+            toggle.set_checked(this._isProviderEnabled(id));
+            this._syncSwitchStyle(toggle);
+            toggle.connect('clicked', () => {
+                /* With toggle_mode the button has already flipped by the
+                 * time clicked fires; the settings listener re-renders. */
+                this._setProviderEnabled(id, toggle.checked);
+            });
+            toggle.accessible_name = `Show ${provider.name ?? id} in the menu`;
+            row.add_child(toggle);
+
+            item.add_child(row);
+            this._controls.addMenuItem(item);
+        }
+    }
+
+    _syncSwitchStyle(toggle) {
+        toggle.remove_style_class_name(toggle.checked ? 'aiu-switch-off' : 'aiu-switch-on');
+        toggle.add_style_class_name(toggle.checked ? 'aiu-switch-on' : 'aiu-switch-off');
+        toggle.get_child()?.set_x_align(toggle.checked ? Clutter.ActorAlign.END : Clutter.ActorAlign.START);
     }
 
     _noticeItem(title, subtitle) {
@@ -535,6 +692,18 @@ class AgentUsageIndicator extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         }));
 
+        /* "3m ago" per card: with four providers on different timers, one
+         * global timestamp no longer says which figure is fresh. */
+        if (provider.updatedAt) {
+            const updated = new St.Label({
+                text: formatRelativeUpdated(provider.updatedAt),
+                style_class: 'aiu-dim aiu-updated',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._updatedLabels.push({label: updated, iso: provider.updatedAt});
+            titleRow.add_child(updated);
+        }
+
         // Semantic Badges: Plan, Stale/Cached, or Status
         if (provider.plan) {
             titleRow.add_child(new St.Label({
@@ -561,30 +730,68 @@ class AgentUsageIndicator extends PanelMenu.Button {
 
         card.add_child(titleRow);
 
-        const limits = this._visibleLimits(provider);
-        for (const entry of limits)
-            card.add_child(this._limitRow(entry));
+        /* Cards collapse to their header: an open/close controller per
+         * provider for long menus. The choice is session-only. */
+        const collapsed = this._collapsed.has(provider.id);
+        const expander = new St.Button({
+            style_class: 'aiu-button aiu-icon-button aiu-expander',
+            can_focus: true,
+            child: new St.Icon({
+                icon_name: collapsed ? 'pan-end-symbolic' : 'pan-down-symbolic',
+                style_class: 'aiu-button-icon',
+            }),
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        expander.accessible_name = collapsed
+            ? `Expand ${provider.name ?? provider.id}`
+            : `Collapse ${provider.name ?? provider.id}`;
+        expander.connect('clicked', () => {
+            if (this._collapsed.has(provider.id))
+                this._collapsed.delete(provider.id);
+            else
+                this._collapsed.add(provider.id);
+            this._render({force: true});
+        });
+        titleRow.add_child(expander);
 
-        if (provider.balance?.text) {
-            const row = new St.BoxLayout({x_expand: true, style_class: 'aiu-limit-header'});
-            row.add_child(new St.Label({text: provider.balance.label ?? 'Balance', x_expand: true}));
-            row.add_child(new St.Label({text: provider.balance.text, style_class: 'aiu-value'}));
-            card.add_child(row);
-        }
+        if (collapsed)
+            card.add_child(new St.Label({text: this._collapsedSummary(provider), style_class: 'aiu-dim aiu-collapsed-summary'}));
+        else {
+            const limits = this._visibleLimits(provider);
+            for (const entry of limits)
+                card.add_child(this._limitRow(entry));
 
-        if (limits.length === 0 && !provider.balance && provider.plan) {
-            const text = STATUS_TEXT[provider.status] ?? 'No usage reported';
-            card.add_child(new St.Label({text, style_class: 'aiu-dim aiu-empty'}));
-        }
+            if (provider.balance?.text) {
+                const row = new St.BoxLayout({x_expand: true, style_class: 'aiu-limit-header'});
+                row.add_child(new St.Label({text: provider.balance.label ?? 'Balance', x_expand: true}));
+                row.add_child(new St.Label({text: provider.balance.text, style_class: 'aiu-value'}));
+                card.add_child(row);
+            }
 
-        if (provider.message && !provider.stale && limits.length === 0) {
-            const note = new St.Label({text: provider.message, style_class: 'aiu-dim aiu-note aiu-wrap'});
-            note.clutter_text.line_wrap = true;
-            card.add_child(note);
+            if (limits.length === 0 && !provider.balance && provider.plan) {
+                const text = STATUS_TEXT[provider.status] ?? 'No usage reported';
+                card.add_child(new St.Label({text, style_class: 'aiu-dim aiu-empty'}));
+            }
+
+            if (provider.message && !provider.stale && limits.length === 0) {
+                const note = new St.Label({text: provider.message, style_class: 'aiu-dim aiu-note aiu-wrap'});
+                note.clutter_text.line_wrap = true;
+                card.add_child(note);
+            }
         }
 
         item.add_child(card);
         this._body.addMenuItem(item);
+    }
+
+    /* One-line headline for a collapsed card: the worst window, same number
+     * the panel shows. */
+    _collapsedSummary(provider) {
+        const limits = this._headlineLimits(provider);
+        if (!limits.length)
+            return STATUS_TEXT[provider.status] ?? 'No data';
+        const worst = limits.reduce((a, b) => (Number(b.percent) > Number(a.percent) ? b : a));
+        return `${worst.label ?? 'Limit'} · ${Math.round(Number(worst.percent))}%`;
     }
 
     _limitRow(entry) {
@@ -742,6 +949,9 @@ class AgentUsageIndicator extends PanelMenu.Button {
     _tickCountdowns() {
         for (const {label, resetsAt} of this._countdownLabels)
             label.text = formatCountdownShort(resetsAt);
+        for (const {label, iso} of this._updatedLabels)
+            label.text = formatRelativeUpdated(iso);
+        this._updateChrome();
     }
 
     _onDestroy() {

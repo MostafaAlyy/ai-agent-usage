@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Terminal prompt: chevron + cursor -->
+    <path d="M2.5 4.5 L6 8 L2.5 11.5"/>
+    <path d="M7.5 11.5 H13.5"/>
+  </g>
+</svg>

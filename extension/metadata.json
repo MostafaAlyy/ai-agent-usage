@@ -1,14 +1,14 @@
 {
   "uuid": "ai-agent-usage@mostafaalyy.github.io",
   "name": "AI Agent Usage",
-  "description": "Shows Google Antigravity, OpenAI Codex, and Claude Code usage limits in the top bar. Reads a cached snapshot produced by a background collector, so the Shell never blocks on the network.",
+  "description": "Shows Google Antigravity, OpenAI Codex, Claude Code, and OpenCode Go usage limits in the top bar. Reads a cached snapshot produced by a background collector, so the Shell never blocks on the network.",
   "shell-version": [
     "48",
     "49",
     "50"
   ],
   "settings-schema": "org.gnome.shell.extensions.ai-agent-usage",
-  "version": 2,
-  "version-name": "1.1.0",
+  "version": 3,
+  "version-name": "1.2.0",
   "url": "https://github.com/MostafaAlyy/ai-agent-usage"
 }

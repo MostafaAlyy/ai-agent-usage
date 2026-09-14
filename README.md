@@ -1,7 +1,8 @@
 # AI Agent Usage
 
-A GNOME Shell top-bar indicator showing OpenAI Codex and Claude Code usage
-limits, built for Fedora + GNOME + Wayland.
+A GNOME Shell top-bar indicator showing Google Antigravity (Gemini), OpenAI
+Codex, Claude Code, and OpenCode Go usage limits, built for Fedora + GNOME +
+Wayland.
 
 ```
 🤖                              ← top bar (optionally "🤖 87%")
@@ -43,19 +44,29 @@ the compositor.
 
 | Provider | Mechanism | Documented? |
 |---|---|---|
+| Antigravity (Gemini) | `agy`'s own OAuth session from the login keyring → `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`; falls back to the IDE language-server RPC when it is running | No — see `NOTICE.md` |
 | Codex | `codex -s read-only -a untrusted app-server`, JSON-RPC `account/read` + `account/rateLimits/read` | No — see `NOTICE.md` |
 | Claude Code | `GET https://api.anthropic.com/api/oauth/usage` with the access token from `~/.claude/.credentials.json` | No — see `NOTICE.md` |
+| OpenCode Go | `GET https://opencode.ai/zen/go/v1/usage` with the key from `~/.local/share/opencode/auth.json` (5h $12 / weekly $30 / monthly $60) | Yes ([Go docs](https://opencode.ai/docs/go)) |
 
 Both undocumented mechanisms are isolated in a single function per provider
-(`collectCodex` and `probeClaudeUsage` in `extension/collector.js`) so they can
-be replaced without touching anything else.
+(`collectAntigravity` + `fetchAgyQuotaDirect`, `collectCodex` and
+`probeClaudeUsage` in `extension/collector.js`) so they can be replaced
+without touching anything else.
+
+The Antigravity card needs no running IDE: as long as `agy` has been signed
+in once, the collector reads its own access token and fetches fresh quotas
+directly. Running `agy` (or its remote-control daemon) keeps that token
+fresh; an expired sign-in is reported as a status, never worked around.
 
 ## Security
 
-* Only the Claude access token is read; the refresh token is never touched, so
-  this project cannot mint or rotate a credential.
-* The token is sent to exactly one place: the `Authorization` header of the
-  request to `api.anthropic.com`.
+* Only access tokens are read, straight from the stores their own CLIs
+  write; refresh tokens are never touched, so this project cannot mint or
+  rotate a credential.
+* Each token is sent to exactly one place: the Claude token to
+  `api.anthropic.com`, the Google (`agy`) token to
+  `cloudcode-pa.googleapis.com`, the OpenCode key to `opencode.ai`.
 * Nothing is logged, cached, or written into the snapshot except percentages,
   reset times, and a plan label.
 * Codex needs no credential at all — the CLI is already authenticated and the

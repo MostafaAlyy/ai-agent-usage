@@ -12,11 +12,14 @@
  *
  * Security
  * --------
- * Only Claude Code's access token is read, straight from the store its own CLI
- * writes. The refresh token is never touched, so this cannot mint or rotate a
- * credential. The token goes to exactly one place: the Authorization header of
- * the request to api.anthropic.com. Nothing but percentages, reset times and a
- * plan label is ever logged or written to the snapshot.
+ * Only access tokens are read, straight from the stores their own CLIs
+ * write: Claude Code's token and `agy`'s Google OAuth session (login
+ * keyring, service "gemini"). Refresh tokens are never touched, so this
+ * cannot mint or rotate a credential. Each token goes to exactly one place:
+ * the Claude token to api.anthropic.com, the Google token to
+ * cloudcode-pa.googleapis.com, the OpenCode key to opencode.ai. Nothing but
+ * percentages, reset times and a plan label is ever logged or written to the
+ * snapshot.
  */
 
 import Gio from 'gi://Gio';
@@ -170,6 +173,10 @@ function windowStillOpen(entry) {
 /* ------------------------------------------------------------- antigravity */
 
 const AGY_PORT_CACHE = GLib.build_filenamev([CACHE_DIR, 'antigravity-port.json']);
+/* The cloudcode endpoint the IDE's language server itself proxies to. Calling
+ * it directly means quotas work without the IDE running -- `agy` keeps the
+ * OAuth token below fresh on every run and via its remote-control daemon. */
+const AGY_QUOTA_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
 
 function findAntigravityCandidatePorts() {
     const candidates = [];
@@ -250,56 +257,79 @@ function probeAntigravityRpc(port, method) {
     return null;
 }
 
-async function collectAntigravity(force) {
-    const candidatePorts = findAntigravityCandidatePorts();
-    let workingPort = null;
-    let quotaData = null;
-
-    for (const port of candidatePorts) {
-        const res = probeAntigravityRpc(port, 'RetrieveUserQuotaSummary');
-        if (res?.response?.groups) {
-            workingPort = port;
-            quotaData = res.response;
-            break;
-        }
-    }
-
-    const fallbackCache = GLib.build_filenamev([CACHE_DIR, 'antigravity-usage.json']);
-    const cached = readJson(fallbackCache) ?? {};
-    const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
-    const cachedPlan = cached.plan ?? '';
-
-    if (!workingPort || !quotaData) {
-        if (fallback.length) {
-            return record('antigravity', 'Google Antigravity', {
-                status: STATUS.ok,
-                limits: fallback,
-                plan: cachedPlan || 'Google AI Pro',
-                stale: true,
-                message: 'Antigravity language server is not reachable; showing last known limits.',
-            });
-        }
-        return record('antigravity', 'Google Antigravity', {
-            status: STATUS.notConfigured,
-            message: 'Antigravity IDE or agy is not running.',
-        });
-    }
-
-    saveJson(AGY_PORT_CACHE, {port: workingPort});
-
-    let plan = cachedPlan || '';
+/* `agy` persists its Google OAuth session in the login keyring under
+ * service "gemini" / username "antigravity". Only the access token is read;
+ * it is sent to exactly one place (cloudcode-pa.googleapis.com) and never
+ * logged, cached, or written anywhere. A missing or locked keyring is not an
+ * error -- the language-server probe below is tried next. */
+function readAgyAccessToken() {
+    let Secret = null;
     try {
-        const userStatus = probeAntigravityRpc(workingPort, 'GetUserStatus');
-        if (userStatus?.userTier?.name)
-            plan = userStatus.userTier.name;
-    } catch {}
+        Secret = imports.gi.Secret;
+    } catch {
+        return null;
+    }
+    try {
+        const schema = new Secret.Schema('org.freedesktop.Secret.Generic',
+            Secret.SchemaFlags.NONE, {
+                service: Secret.SchemaAttributeType.STRING,
+                username: Secret.SchemaAttributeType.STRING,
+            });
+        const password = Secret.password_lookup_sync(
+            schema, {service: 'gemini', username: 'antigravity'}, null);
+        if (!password)
+            return null;
+        const stored = JSON.parse(password);
+        const token = String(stored?.token?.access_token ?? '').trim();
+        return token || null;
+    } catch {
+        return null;
+    }
+}
 
+/* Same payload the IDE's RetrieveUserQuotaSummary RPC returns, fetched over
+ * plain HTTPS. Returns the quota object or null when the token is missing,
+ * expired, or the network failed. */
+function fetchAgyQuotaDirect() {
+    const accessToken = readAgyAccessToken();
+    if (!accessToken)
+        return null;
+    /* The endpoint only answers its own clients; this request carries the
+     * user's own `agy` OAuth token, so it identifies as one. */
+    const session = new Soup.Session({timeout: 12, user_agent: 'antigravity/linux/amd64'});
+    const message = Soup.Message.new('POST', AGY_QUOTA_ENDPOINT);
+    message.request_headers.append('Authorization', `Bearer ${accessToken}`);
+    message.request_headers.append('Content-Type', 'application/json');
+    message.set_request_body_from_bytes('application/json', new GLib.Bytes(new TextEncoder().encode('{}')));
+    let bytes;
+    try {
+        bytes = session.send_and_read(message, null);
+    } catch {
+        return null;
+    }
+    if (message.get_status() !== 200 || !bytes)
+        return null;
+    try {
+        const payload = JSON.parse(new TextDecoder().decode(bytes.get_data()));
+        const quota = payload?.groups ? payload : payload?.response;
+        return quota?.groups ? quota : null;
+    } catch {
+        return null;
+    }
+}
+
+/* Buckets shared by both quota paths (direct HTTPS and language-server RPC).
+ * Disabled buckets describe windows that do not currently apply -- showing a
+ * 0% bar for one while its sibling window is exhausted would misreport. */
+function antigravityLimitsFromQuota(quotaData) {
     const limits = [];
     for (const group of (quotaData.groups ?? [])) {
         const isPrimary = group.displayName?.toLowerCase().includes('gemini');
         const groupType = isPrimary ? 'primary' : 'scoped';
 
         for (const bucket of (group.buckets ?? [])) {
+            if (bucket.disabled)
+                continue;
             const fraction = Number(bucket.remainingFraction ?? 1);
             const usedPercent = Math.max(0, Math.min(100, (1 - fraction) * 100));
             const resetsAt = bucket.resetTime ?? null;
@@ -318,6 +348,71 @@ async function collectAntigravity(force) {
                 limits.push(item);
         }
     }
+    return limits;
+}
+
+async function collectAntigravity(force) {
+    const fallbackCache = GLib.build_filenamev([CACHE_DIR, 'antigravity-usage.json']);
+    const cached = readJson(fallbackCache) ?? {};
+    const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
+    const cachedPlan = cached.plan ?? '';
+
+    /* Fresh quotas straight from the account: the keyring holds `agy`'s own
+     * OAuth session, so this works whether or not the IDE (or any language
+     * server) is running. */
+    const direct = fetchAgyQuotaDirect();
+    if (direct) {
+        const limits = antigravityLimitsFromQuota(direct);
+        if (limits.length) {
+            saveJson(fallbackCache, {limits, plan: cachedPlan, updatedAt: GLib.DateTime.new_now_local().format_iso8601()});
+            return record('antigravity', 'Google Antigravity', {
+                status: STATUS.ok,
+                limits,
+                plan: cachedPlan || 'Google AI',
+            });
+        }
+    }
+
+    /* Second route in: the IDE's language server, when it is running. */
+    const candidatePorts = findAntigravityCandidatePorts();
+    let workingPort = null;
+    let quotaData = null;
+
+    for (const port of candidatePorts) {
+        const res = probeAntigravityRpc(port, 'RetrieveUserQuotaSummary');
+        if (res?.response?.groups) {
+            workingPort = port;
+            quotaData = res.response;
+            break;
+        }
+    }
+
+    if (!workingPort || !quotaData) {
+        if (fallback.length) {
+            return record('antigravity', 'Google Antigravity', {
+                status: STATUS.ok,
+                limits: fallback,
+                plan: cachedPlan || 'Google AI Pro',
+                stale: true,
+                message: 'Could not reach Google quotas; showing last known limits. Run `agy` to refresh the sign-in.',
+            });
+        }
+        return record('antigravity', 'Google Antigravity', {
+            status: STATUS.notConfigured,
+            message: 'agy is not signed in. Run `agy` once to log in with Google.',
+        });
+    }
+
+    saveJson(AGY_PORT_CACHE, {port: workingPort});
+
+    let plan = cachedPlan || '';
+    try {
+        const userStatus = probeAntigravityRpc(workingPort, 'GetUserStatus');
+        if (userStatus?.userTier?.name)
+            plan = userStatus.userTier.name;
+    } catch {}
+
+    const limits = antigravityLimitsFromQuota(quotaData);
 
     if (limits.length === 0) {
         if (fallback.length) {
@@ -686,12 +781,119 @@ async function collectClaude(force) {
     return record('claude', 'Claude Code', {status: probe.status, message: probe.message, plan});
 }
 
+/* -------------------------------------------------------------- opencode go */
+
+/* OpenCode Go is a $10/month subscription with spend-based windows: $12 per
+ * rolling 5 hours, $30 per week, $60 per month. The official usage endpoint
+ * reports each window's used percent and reset time directly.
+ *
+ * This is the one function that knows the endpoint, so it is deliberately
+ * isolated. Only the API key OpenCode itself stores is read; it is sent to
+ * exactly one place (opencode.ai) and never logged. */
+const OPENCODE_GO_USAGE_ENDPOINT = 'https://opencode.ai/zen/go/v1/usage';
+const OPENCODE_GO_WINDOWS = [
+    {key: 'rolling', label: '5h · $12'},
+    {key: 'weekly', label: 'Weekly · $30'},
+    {key: 'monthly', label: 'Monthly · $60'},
+];
+
+function opencodeGoApiKey() {
+    const auth = readJson(GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'auth.json']));
+    const key = String(auth?.['opencode-go']?.key ?? '').trim();
+    return key || null;
+}
+
+function probeOpencodeGoUsage(apiKey) {
+    const session = new Soup.Session({timeout: 12, user_agent: 'agent-usage/1'});
+    const message = Soup.Message.new('GET', OPENCODE_GO_USAGE_ENDPOINT);
+    message.request_headers.append('Authorization', `Bearer ${apiKey}`);
+    message.request_headers.append('Accept', 'application/json');
+
+    let body;
+    try {
+        body = session.send_and_read(message, null);
+    } catch {
+        return {ok: false, status: STATUS.error, message: "Couldn't reach opencode.ai. Check your connection."};
+    }
+
+    const code = message.get_status();
+    if (code === 401 || code === 403) {
+        return {
+            ok: false,
+            status: STATUS.auth,
+            message: 'The OpenCode Go key was rejected. Run `/connect` in opencode to reconnect it.',
+        };
+    }
+    if (code < 200 || code >= 300)
+        return {ok: false, status: STATUS.error, message: `Usage endpoint returned status ${code}.`};
+
+    let payload;
+    try {
+        payload = JSON.parse(new TextDecoder().decode(body.get_data()));
+    } catch {
+        return {ok: false, status: STATUS.error, message: 'opencode.ai returned unreadable usage data.'};
+    }
+
+    const usage = payload?.usage ?? {};
+    const limits = [];
+    let message_ = '';
+    for (const window of OPENCODE_GO_WINDOWS) {
+        const entry = usage[window.key];
+        if (entry && String(entry.status ?? 'ok') !== 'ok' && !message_)
+            message_ = `The ${window.key} window reports: ${entry.status}.`;
+        const item = limit(window.key, window.label, Number(entry?.percent), entry?.resetsAt ?? null);
+        if (item)
+            limits.push(item);
+    }
+    if (!limits.length)
+        return {ok: false, status: STATUS.error, message: 'opencode.ai returned no usage windows.'};
+    return {ok: true, limits, message: message_};
+}
+
+async function collectOpencodeGo(force) {
+    const apiKey = opencodeGoApiKey();
+
+    const probeCache = GLib.build_filenamev([CACHE_DIR, 'opencode-go-usage.json']);
+    const cached = readJson(probeCache) ?? {};
+    const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
+
+    if (!apiKey) {
+        return record('opencode-go', 'OpenCode Go', {
+            status: GLib.file_test(
+                GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode']), GLib.FileTest.IS_DIR)
+                ? STATUS.auth
+                : STATUS.notConfigured,
+            message: 'OpenCode Go is not connected. Run `/connect` in opencode and add the Go API key.',
+            limits: fallback,
+            plan: 'Go',
+            stale: fallback.length > 0,
+        });
+    }
+
+    const fetchedAt = Number(cached.fetchedAt ?? 0);
+    if (fallback.length && !force && Date.now() / 1000 - fetchedAt < CLAUDE_PROBE_MIN_INTERVAL_SECONDS)
+        return record('opencode-go', 'OpenCode Go', {status: STATUS.ok, limits: fallback, plan: 'Go'});
+
+    const probe = probeOpencodeGoUsage(apiKey);
+    if (probe.ok) {
+        saveJson(probeCache, {fetchedAt: Date.now() / 1000, limits: probe.limits});
+        return record('opencode-go', 'OpenCode Go', {status: STATUS.ok, limits: probe.limits, plan: 'Go', message: probe.message});
+    }
+    if (fallback.length) {
+        return record('opencode-go', 'OpenCode Go', {
+            status: STATUS.ok, limits: fallback, plan: 'Go', stale: true, message: probe.message,
+        });
+    }
+    return record('opencode-go', 'OpenCode Go', {status: probe.status, message: probe.message, plan: 'Go'});
+}
+
 /* -------------------------------------------------------------------- main */
 
 const PROVIDERS = [
     {id: 'antigravity', run: force => collectAntigravity(force)},
     {id: 'codex', run: collectCodex},
     {id: 'claude', run: force => collectClaude(force)},
+    {id: 'opencode-go', run: force => collectOpencodeGo(force)},
 ];
 
 async function main(argv) {

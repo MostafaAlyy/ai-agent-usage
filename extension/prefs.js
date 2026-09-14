@@ -9,9 +9,10 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const PROVIDERS = [
-    {id: 'antigravity', title: 'Google Antigravity', subtitle: 'Read from local Antigravity IDE / agy language server'},
+    {id: 'antigravity', title: 'Google Antigravity', subtitle: 'Gemini + Claude/GPT quotas from your agy sign-in — no IDE needed'},
     {id: 'codex', title: 'OpenAI Codex', subtitle: 'Read from the local codex CLI'},
     {id: 'claude', title: 'Claude Code', subtitle: 'Read from the Claude Code sign-in'},
+    {id: 'opencode-go', title: 'OpenCode Go', subtitle: 'Spend windows from your opencode Go subscription'},
 ];
 
 /* The providers live in one string list, so each switch adds or removes its
