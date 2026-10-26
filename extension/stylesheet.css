@@ -122,6 +122,12 @@
   font-size: 0.82em;
 }
 
+/* A banked reset is an allowance waiting to be spent: accent-coloured so it
+ * reads as an asset rather than as usage. */
+.aiu-value.aiu-resets {
+  color: -st-accent-color;
+}
+
 .aiu-bar-track {
   height: 4px;
   border-radius: 2px;

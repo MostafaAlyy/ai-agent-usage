@@ -59,26 +59,7 @@ function formatClock(iso) {
     return text ?? '--:--';
 }
 
-/* "Resets in 5h 14m" -- the shape people actually read a limit window in. */
-function formatCountdown(iso) {
-    if (!iso)
-        return '';
-    const when = GLib.DateTime.new_from_iso8601(iso, null);
-    if (!when)
-        return '';
-    const seconds = when.difference(GLib.DateTime.new_now_utc()) / 1000000;
-    if (seconds <= 0)
-        return 'Resetting';
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    if (days > 0)
-        return `Resets in ${days}d ${hours}h`;
-    if (hours > 0)
-        return `Resets in ${hours}h ${minutes}m`;
-    return `Resets in ${Math.max(minutes, 1)}m`;
-}
-
+/* "in 5h 14m" -- the shape people actually read a limit window in. */
 function formatCountdownShort(iso) {
     if (!iso)
         return '';
@@ -96,15 +77,6 @@ function formatCountdownShort(iso) {
     if (hours > 0)
         return `in ${hours}h ${minutes}m`;
     return `in ${Math.max(minutes, 1)}m`;
-}
-
-function formatResetStamp(iso) {
-    if (!iso)
-        return '';
-    const when = GLib.DateTime.new_from_iso8601(iso, null);
-    if (!when)
-        return '';
-    return when.to_local().format('%a %H:%M') ?? '';
 }
 
 function formatRelativeUpdated(iso) {
@@ -637,12 +609,37 @@ class AgentUsageIndicator extends PanelMenu.Button {
                 card.add_child(row);
             }
 
-            if (limits.length === 0 && !provider.balance && provider.plan) {
+            /* A banked reset is a spendable allowance, not a used window, so
+             * it gets a row rather than a bar. Only shown when there is one. */
+            if (provider.resets?.count > 0) {
+                const row = new St.BoxLayout({x_expand: true, style_class: 'aiu-limit-header'});
+                row.add_child(new St.Label({text: 'Banked resets', x_expand: true}));
+                if (provider.resets.expiresAt) {
+                    const expires = new St.Label({
+                        text: `expires ${formatCountdownShort(provider.resets.expiresAt)}`,
+                        style_class: 'aiu-dim aiu-countdown-inline',
+                        y_align: Clutter.ActorAlign.CENTER,
+                    });
+                    this._countdownLabels.push({label: expires, resetsAt: provider.resets.expiresAt});
+                    row.add_child(expires);
+                }
+                row.add_child(new St.Label({
+                    text: String(provider.resets.count),
+                    style_class: 'aiu-value aiu-resets',
+                    y_align: Clutter.ActorAlign.CENTER,
+                }));
+                card.add_child(row);
+            }
+
+            if (limits.length === 0 && !provider.balance && !provider.resets && provider.plan) {
                 const text = STATUS_TEXT[provider.status] ?? 'No usage reported';
                 card.add_child(new St.Label({text, style_class: 'aiu-dim aiu-empty'}));
             }
 
-            if (provider.message && !provider.stale && limits.length === 0) {
+            /* Why a card is cached, or why it is empty, belongs on the card:
+             * the badge alone does not say whether the sign-in lapsed or the
+             * network blinked. */
+            if (provider.message && (provider.stale || limits.length === 0)) {
                 const note = new St.Label({text: provider.message, style_class: 'aiu-dim aiu-note aiu-wrap'});
                 note.clutter_text.line_wrap = true;
                 card.add_child(note);

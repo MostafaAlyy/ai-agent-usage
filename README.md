@@ -44,20 +44,22 @@ the compositor.
 
 | Provider | Mechanism | Documented? |
 |---|---|---|
-| Antigravity (Gemini) | `agy`'s own OAuth session from the login keyring → `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`; falls back to the IDE language-server RPC when it is running | No — see `NOTICE.md` |
+| Antigravity (Gemini) | The IDE's own language server (`RetrieveUserQuotaSummary` + `GetUserStatus` over the loopback RPC it binds, authorized with the CSRF token read from its process); falls back to the last good reading, then to `agy`'s own OAuth session from the login keyring → `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | No — see `NOTICE.md` |
 | Codex | `codex -s read-only -a untrusted app-server`, JSON-RPC `account/read` + `account/rateLimits/read` | No — see `NOTICE.md` |
 | Claude Code | `GET https://api.anthropic.com/api/oauth/usage` with the access token from `~/.claude/.credentials.json` | No — see `NOTICE.md` |
-| OpenCode Go | `GET https://opencode.ai/zen/go/v1/usage` with the key from `~/.local/share/opencode/auth.json` (5h $12 / weekly $30 / monthly $60) | Yes ([Go docs](https://opencode.ai/docs/go)) |
+| OpenCode Go | `GET https://opencode.ai/inference/go/v1/usage` with the OpenCode Console session opencode stores in its own credential store (falling back to the legacy Go API key in `~/.local/share/opencode/auth.json`) (5h $12 / weekly $30 / monthly $60) | Yes ([Go docs](https://opencode.ai/docs/go)) |
 
 Both undocumented mechanisms are isolated in a single function per provider
 (`collectAntigravity` + `fetchAgyQuotaDirect`, `collectCodex` and
 `probeClaudeUsage` in `extension/collector.js`) so they can be replaced
 without touching anything else.
 
-The Antigravity card needs no running IDE: as long as `agy` has been signed
-in once, the collector reads its own access token and fetches fresh quotas
-directly. Running `agy` (or its remote-control daemon) keeps that token
-fresh; an expired sign-in is reported as a status, never worked around.
+The Antigravity card is read, in order, from: the IDE's own language server
+while it is running (the only local source bound to the signed-in project, and
+so the only one that reports a spent Gemini window as spent); the last reading
+it gave; and finally the account-wide HTTPS endpoint, for a machine whose IDE
+has never reported. Plan name and remaining AI credits come from the language
+server's `GetUserStatus`.
 
 ## Security
 
@@ -66,9 +68,17 @@ fresh; an expired sign-in is reported as a status, never worked around.
   rotate a credential.
 * Each token is sent to exactly one place: the Claude token to
   `api.anthropic.com`, the Google (`agy`) token to
-  `cloudcode-pa.googleapis.com`, the OpenCode key to `opencode.ai`.
+  `cloudcode-pa.googleapis.com`, opencode's session to `opencode.ai`.
+* The OpenCode Go card asks with the session opencode is signed in with, not
+  with whatever key an older build left in `auth.json`: a stale key there
+  answers 401 while the CLI keeps working. Its refresh token is left alone, so
+  only opencode can renew that session; an expired one is reported, never
+  refreshed here.
+* The Antigravity language server's CSRF token is read from that process's own
+  command line and used for loopback requests only; it is never logged, cached,
+  or sent off the machine.
 * Nothing is logged, cached, or written into the snapshot except percentages,
-  reset times, and a plan label.
+  reset times, credit counts, and a plan label.
 * Codex needs no credential at all — the CLI is already authenticated and the
   RPC never hands one back.
 * An expired sign-in is reported as a status, never worked around. Running
@@ -93,11 +103,15 @@ Add an entry to `PROVIDERS` in `extension/collector.js` returning one record:
  "status":"ok","plan":"Pro","message":"",
  "limits":[{"key":"session","label":"5-hour limit","percent":31.0,
             "resetsAt":"2026-08-21T20:00:00+00:00","group":"primary"}],
- "balance":null,"updatedAt":"2026-08-21T19:30:00+03:00"}
+ "balance":null,"resets":null,"updatedAt":"2026-08-21T19:30:00+03:00"}
 ```
 
 `status` is one of `ok`, `not_configured`, `auth`, `error`. `group` is
 `primary` for account-wide windows or `scoped` for per-model allowances.
+`balance` is an optional `{label, text}` line for a credit amount, and
+`resets` an optional `{count, expiresAt}` line for a banked quota reset the
+provider grants and expires (Codex reports these in
+`rateLimitResetCredits`; nothing else does, so it is only ever set there).
 Nothing else needs to change — the extension renders whatever it finds.
 
 ## Debugging

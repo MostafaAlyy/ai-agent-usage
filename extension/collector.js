@@ -13,13 +13,13 @@
  * Security
  * --------
  * Only access tokens are read, straight from the stores their own CLIs
- * write: Claude Code's token and `agy`'s Google OAuth session (login
- * keyring, service "gemini"). Refresh tokens are never touched, so this
- * cannot mint or rotate a credential. Each token goes to exactly one place:
- * the Claude token to api.anthropic.com, the Google token to
- * cloudcode-pa.googleapis.com, the OpenCode key to opencode.ai. Nothing but
- * percentages, reset times and a plan label is ever logged or written to the
- * snapshot.
+ * write: Claude Code's token, `agy`'s Google OAuth session (login keyring,
+ * service "gemini"), and opencode's own session for the OpenCode Console.
+ * Refresh tokens are never touched, so this cannot mint or rotate a
+ * credential. Each token goes to exactly one place: the Claude token to
+ * api.anthropic.com, the Google token to cloudcode-pa.googleapis.com,
+ * opencode's to opencode.ai. Nothing but percentages, reset times and a plan
+ * label is ever logged or written to the snapshot.
  */
 
 import Gio from 'gi://Gio';
@@ -32,8 +32,9 @@ const SNAPSHOT = GLib.build_filenamev([STATE_DIR, 'usage.json']);
 const CACHE_DIR = GLib.build_filenamev([GLib.get_user_cache_dir(), 'agent-usage']);
 
 /* Anthropic rate-limits the usage endpoint itself, so a recent answer is
- * reused unless the user explicitly asked for fresh numbers. */
-const CLAUDE_PROBE_MIN_INTERVAL_SECONDS = 120;
+ * reused unless the user explicitly asked for fresh numbers. OpenCode Go is
+ * polled on the same cadence. */
+const PROBE_MIN_INTERVAL_SECONDS = 120;
 const RPC_TIMEOUT_MS = 8000;
 
 const STATUS = {
@@ -117,6 +118,8 @@ function windowLabel(minutes) {
     const mins = Number(minutes) || 0;
     if (mins === 10080)
         return 'Weekly';
+    if (mins === 43200)
+        return 'Monthly';
     if (mins === 1440)
         return 'Daily';
     if (mins && mins % 60 === 0)
@@ -141,6 +144,9 @@ function limit(key, label, percent, resetsAt, group = 'primary') {
     };
 }
 
+/* One provider record. `resets` is a spent-allowance side account: a banked
+ * quota reset the provider grants and expires, which is a row of its own
+ * rather than a limit. */
 function record(id, name, fields) {
     return {
         schemaVersion: SCHEMA_VERSION,
@@ -152,6 +158,7 @@ function record(id, name, fields) {
         message: '',
         limits: [],
         balance: null,
+        resets: null,
         updatedAt: GLib.DateTime.new_now_local().format_iso8601(),
         ...fields,
         ...{limits: (fields.limits ?? []).filter(entry => entry)},
@@ -172,88 +179,125 @@ function windowStillOpen(entry) {
 
 /* ------------------------------------------------------------- antigravity */
 
-const AGY_PORT_CACHE = GLib.build_filenamev([CACHE_DIR, 'antigravity-port.json']);
-/* The cloudcode endpoint the IDE's language server itself proxies to. Calling
- * it directly means quotas work without the IDE running -- `agy` keeps the
- * OAuth token below fresh on every run and via its remote-control daemon. */
+const AGY_QUOTA_RPC = 'exa.language_server_pb.LanguageServerService';
+/* The cloudcode endpoint the IDE's language server itself proxies to. It is
+ * kept as a last resort only: without the IDE's project context it answers
+ * with a full Gemini allowance even while that allowance is being spent. */
 const AGY_QUOTA_ENDPOINT = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
 
-function findAntigravityCandidatePorts() {
-    const candidates = [];
-    const cached = readJson(AGY_PORT_CACHE)?.port;
-    if (cached && typeof cached === 'number')
-        candidates.push(cached);
-
+function readProc(path) {
     try {
-        const inodes = new Set();
-        const procDir = Gio.File.new_for_path('/proc');
-        const enumerator = procDir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
-        let fileInfo;
-        while ((fileInfo = enumerator.next_file(null)) !== null) {
-            const pid = fileInfo.get_name();
-            if (!/^\d+$/.test(pid))
-                continue;
-            try {
-                const commPath = `/proc/${pid}/comm`;
-                const [ok, commBytes] = GLib.file_get_contents(commPath);
-                if (!ok)
-                    continue;
-                const comm = new TextDecoder().decode(commBytes).trim().toLowerCase();
-                if (comm.includes('agy') || comm.includes('antigravity') || comm.includes('localharness')) {
-                    const fdDir = Gio.File.new_for_path(`/proc/${pid}/fd`);
-                    const fdEnum = fdDir.enumerate_children('standard::name,standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-                    let fdInfo;
-                    while ((fdInfo = fdEnum.next_file(null)) !== null) {
-                        const target = fdInfo.get_symlink_target();
-                        if (target && target.startsWith('socket:[')) {
-                            inodes.add(target.slice(8, -1));
-                        }
-                    }
-                }
-            } catch {}
-        }
-
-        for (const netPath of ['/proc/net/tcp', '/proc/net/tcp6']) {
-            try {
-                const [ok, tcpBytes] = GLib.file_get_contents(netPath);
-                if (!ok)
-                    continue;
-                const lines = new TextDecoder().decode(tcpBytes).split('\n');
-                for (let i = 1; i < lines.length; i++) {
-                    const parts = lines[i].trim().split(/\s+/);
-                    if (parts.length >= 10) {
-                        const localAddr = parts[1];
-                        const st = parts[3];
-                        const inode = parts[9];
-                        if (st === '0A') { // TCP_LISTEN
-                            const [, portHex] = localAddr.split(':');
-                            const port = parseInt(portHex, 16);
-                            if (inodes.has(inode)) {
-                                candidates.push(port);
-                            }
-                        }
-                    }
-                }
-            } catch {}
-        }
-    } catch {}
-
-    return [...new Set(candidates)];
+        const [ok, bytes] = GLib.file_get_contents(path);
+        return ok ? new TextDecoder().decode(bytes) : null;
+    } catch {
+        return null;
+    }
 }
 
-function probeAntigravityRpc(port, method) {
-    const session = new Soup.Session({timeout: 2, user_agent: 'agent-usage/1'});
-    const uri = `http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${method}`;
+/* Every listening TCP port on the machine, keyed by socket inode. */
+function listeningPortsByInode() {
+    const byInode = new Map();
+    for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
+        const text = readProc(path);
+        if (!text)
+            continue;
+        for (const line of text.split('\n').slice(1)) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 10 || parts[3] !== '0A')   // TCP_LISTEN
+                continue;
+            const port = parseInt(parts[1].split(':')[1], 16);
+            if (Number.isFinite(port) && port > 0)
+                byInode.set(parts[9], port);
+        }
+    }
+    return byInode;
+}
+
+function socketInodes(pid) {
+    const inodes = new Set();
+    try {
+        const enumerator = Gio.File.new_for_path(`/proc/${pid}/fd`).enumerate_children(
+            'standard::name,standard::symlink-target', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+        let info;
+        while ((info = enumerator.next_file(null)) !== null) {
+            const target = info.get_symlink_target();
+            if (target?.startsWith('socket:['))
+                inodes.add(target.slice(8, -1));
+        }
+    } catch { /* the process exited between listing and reading */ }
+    return inodes;
+}
+
+/* Candidate quota endpoints, best first.
+ *
+ * The IDE's language server binds a random port and refuses every request
+ * without the CSRF token it was started with, which is why probing it used to
+ * fail in silence and hand the job to the HTTPS endpoint that under-reports
+ * Gemini. Both facts are readable from the process itself: the port from its
+ * listening socket, the token from its own command line (or the environment
+ * it inherited). The token is a credential, so it is never cached on disk. */
+function findAntigravityEndpoints() {
+    const ports = listeningPortsByInode();
+    const endpoints = [];
+    const seen = new Set();
+
+    let enumerator;
+    try {
+        enumerator = Gio.File.new_for_path('/proc').enumerate_children(
+            'standard::name', Gio.FileQueryInfoFlags.NONE, null);
+    } catch {
+        return endpoints;
+    }
+
+    let info;
+    while ((info = enumerator.next_file(null)) !== null) {
+        const pid = info.get_name();
+        if (!/^\d+$/.test(pid))
+            continue;
+        const cmdline = readProc(`/proc/${pid}/cmdline`);
+        if (!cmdline)
+            continue;
+
+        const argv = cmdline.split('\0').filter(Boolean);
+        const comm = (readProc(`/proc/${pid}/comm`) ?? '').trim();
+        if (comm !== 'language_server' && comm !== 'localharness' && !argv.join(' ').includes('language_server'))
+            continue;
+
+        let csrf = '';
+        const flag = argv.indexOf('--csrf_token');
+        if (flag >= 0)
+            csrf = argv[flag + 1] ?? '';
+        if (!csrf) {
+            const match = /(?:^|\0)ANTIGRAVITY_CSRF_TOKEN=([^\0]+)/.exec(readProc(`/proc/${pid}/environ`) ?? '');
+            if (match)
+                csrf = match[1];
+        }
+
+        for (const inode of socketInodes(pid)) {
+            const port = ports.get(inode);
+            if (!port || seen.has(port))
+                continue;
+            seen.add(port);
+            endpoints.push({port, csrf});
+        }
+    }
+    return endpoints;
+}
+
+function probeAntigravityRpc(endpoint, method) {
+    const session = new Soup.Session({timeout: 3, user_agent: 'agent-usage/1'});
+    const uri = `http://127.0.0.1:${endpoint.port}/${AGY_QUOTA_RPC}/${method}`;
     const message = Soup.Message.new('POST', uri);
     message.request_headers.append('Content-Type', 'application/json');
+    if (endpoint.csrf)
+        message.request_headers.append('x-codeium-csrf-token', endpoint.csrf);
     message.set_request_body_from_bytes('application/json', new GLib.Bytes(new TextEncoder().encode('{}')));
 
     try {
         const bytes = session.send_and_read(message, null);
-        if (message.get_status() === 200 && bytes) {
+        if (message.get_status() === 200 && bytes)
             return JSON.parse(new TextDecoder().decode(bytes.get_data()));
-        }
-    } catch {}
+    } catch { /* not this port, or the server went away */ }
     return null;
 }
 
@@ -261,7 +305,8 @@ function probeAntigravityRpc(port, method) {
  * service "gemini" / username "antigravity". Only the access token is read;
  * it is sent to exactly one place (cloudcode-pa.googleapis.com) and never
  * logged, cached, or written anywhere. A missing or locked keyring is not an
- * error -- the language-server probe below is tried next. */
+ * error -- the IDE is the preferred source and this is only a fallback for an
+ * account whose IDE has never reported. */
 function readAgyAccessToken() {
     let Secret = null;
     try {
@@ -287,9 +332,12 @@ function readAgyAccessToken() {
     }
 }
 
-/* Same payload the IDE's RetrieveUserQuotaSummary RPC returns, fetched over
- * plain HTTPS. Returns the quota object or null when the token is missing,
- * expired, or the network failed. */
+/* The account-wide quota endpoint, used only when the IDE has never reported
+ * for this machine. It answers from the signed-in account rather than from a
+ * project, so its Gemini buckets can read as untouched while they are in fact
+ * being spent -- the caller keeps it behind the IDE and the last good cache
+ * for exactly that reason. Returns the quota object or null when the token is
+ * missing, expired, or the network failed. */
 function fetchAgyQuotaDirect() {
     const accessToken = readAgyAccessToken();
     if (!accessToken)
@@ -318,37 +366,72 @@ function fetchAgyQuotaDirect() {
     }
 }
 
-/* Buckets shared by both quota paths (direct HTTPS and language-server RPC).
+/* A short window name for a bucket. */
+function antigravityWindowLabel(window) {
+    const text = String(window ?? '').trim().toLowerCase();
+    if (text === 'weekly')
+        return 'Weekly';
+    if (text === 'daily')
+        return 'Daily';
+    return text;
+}
+
+/* The payload's own display names read "Weekly Limit Remaining", repeating
+ * the window the row already shows, so the label is built from the bucket id:
+ * the three families that share this account are named explicitly, and
+ * anything new keeps its group name. */
+function antigravityBucketLabel(groupName, bucket) {
+    const id = String(bucket.bucketId ?? '');
+    const window = antigravityWindowLabel(bucket.window);
+    const argon = id.startsWith('gemini-argon') || /argon/i.test(groupName);
+    const family = argon ? 'Argon'
+        : id.startsWith('gemini') ? 'Gemini'
+        : id.startsWith('3p') ? 'Claude & GPT'
+        : groupName;
+    return [family, window].filter(Boolean).join(' · ') || 'Limit';
+}
+
+/* Buckets shared by both quota paths (language-server RPC and direct HTTPS).
  * Disabled buckets describe windows that do not currently apply -- showing a
  * 0% bar for one while its sibling window is exhausted would misreport. */
 function antigravityLimitsFromQuota(quotaData) {
     const limits = [];
     for (const group of (quotaData.groups ?? [])) {
-        const isPrimary = group.displayName?.toLowerCase().includes('gemini');
-        const groupType = isPrimary ? 'primary' : 'scoped';
+        const groupName = String(group.displayName ?? '').trim();
+        /* Only the account-wide Gemini window is "primary". Claude/GPT and
+         * the separate Argon allowance are model-scoped: exhausting one does
+         * not mean the account is out, so it must not paint the panel red. */
+        const groupType = /gemini/i.test(groupName) && !/argon/i.test(groupName) ? 'primary' : 'scoped';
 
         for (const bucket of (group.buckets ?? [])) {
             if (bucket.disabled)
                 continue;
             const fraction = Number(bucket.remainingFraction ?? 1);
             const usedPercent = Math.max(0, Math.min(100, (1 - fraction) * 100));
-            const resetsAt = bucket.resetTime ?? null;
-
-            let label = bucket.displayName ?? 'Limit';
-            if (bucket.bucketId === 'gemini-5h' || bucket.window === '5h') {
-                label = isPrimary ? 'Gemini · 5h' : 'Claude & GPT · 5h';
-            } else if (bucket.bucketId === 'gemini-weekly' || bucket.window === 'weekly') {
-                label = isPrimary ? 'Gemini · Weekly' : 'Claude & GPT · Weekly';
-            } else if (group.displayName) {
-                label = `${group.displayName} · ${bucket.displayName}`;
-            }
-
-            const item = limit(bucket.bucketId ?? label, label, usedPercent, resetsAt, groupType);
+            const label = antigravityBucketLabel(groupName, bucket);
+            const item = limit(bucket.bucketId ?? label, label, usedPercent, bucket.resetTime, groupType);
             if (item)
                 limits.push(item);
         }
     }
     return limits;
+}
+
+/* Plan name and remaining AI credits, straight from the language server. The
+ * credits are what keeps work possible after a 5-hour window is exhausted, so
+ * they belong beside the bars. */
+function antigravityPlanAndBalance(endpoint) {
+    const status = probeAntigravityRpc(endpoint, 'GetUserStatus')?.userStatus;
+    if (!status)
+        return {plan: '', balance: null};
+
+    const plan = String(status.userTier?.name ?? status.planStatus?.planInfo?.planName ?? '').trim();
+    const available = Number(status.planStatus?.availablePromptCredits);
+    const monthly = Number(status.planStatus?.planInfo?.monthlyPromptCredits);
+    const balance = Number.isFinite(available) && available >= 0 && Number.isFinite(monthly) && monthly > 0
+        ? {label: 'AI credits', text: `${available} / ${monthly}`}
+        : null;
+    return {plan, balance};
 }
 
 async function collectAntigravity(force) {
@@ -357,14 +440,52 @@ async function collectAntigravity(force) {
     const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
     const cachedPlan = cached.plan ?? '';
 
-    /* Fresh quotas straight from the account: the keyring holds `agy`'s own
-     * OAuth session, so this works whether or not the IDE (or any language
-     * server) is running. */
+    /* Route one: the IDE's own language server. It is the only local source
+     * bound to the signed-in project, so it reports the Gemini windows the
+     * account is actually spending against. */
+    for (const endpoint of findAntigravityEndpoints()) {
+        const response = probeAntigravityRpc(endpoint, 'RetrieveUserQuotaSummary')?.response;
+        if (!response?.groups)
+            continue;
+        const limits = antigravityLimitsFromQuota(response);
+        if (limits.length === 0)
+            continue;
+
+        const {plan, balance} = antigravityPlanAndBalance(endpoint);
+        const label = plan || cachedPlan || 'Google AI';
+        saveJson(fallbackCache, {
+            limits, plan: label, updatedAt: GLib.DateTime.new_now_local().format_iso8601(),
+        });
+        return record('antigravity', 'Google Antigravity', {
+            status: STATUS.ok,
+            limits,
+            balance,
+            plan: label,
+        });
+    }
+
+    /* Route two: the last reading the IDE gave. The HTTPS endpoint below can
+     * read a spent Gemini window as untouched, so an old honest number beats a
+     * fresh wrong one; a window that has since rolled over is dropped. */
+    if (fallback.length) {
+        return record('antigravity', 'Google Antigravity', {
+            status: STATUS.ok,
+            limits: fallback,
+            plan: cachedPlan || 'Google AI',
+            stale: true,
+            message: 'Last known limits. Open Antigravity to refresh them.',
+        });
+    }
+
+    /* Route three: the account endpoint, for a machine whose IDE has never
+     * reported. */
     const direct = fetchAgyQuotaDirect();
     if (direct) {
         const limits = antigravityLimitsFromQuota(direct);
         if (limits.length) {
-            saveJson(fallbackCache, {limits, plan: cachedPlan, updatedAt: GLib.DateTime.new_now_local().format_iso8601()});
+            saveJson(fallbackCache, {
+                limits, plan: cachedPlan, updatedAt: GLib.DateTime.new_now_local().format_iso8601(),
+            });
             return record('antigravity', 'Google Antigravity', {
                 status: STATUS.ok,
                 limits,
@@ -373,74 +494,30 @@ async function collectAntigravity(force) {
         }
     }
 
-    /* Second route in: the IDE's language server, when it is running. */
-    const candidatePorts = findAntigravityCandidatePorts();
-    let workingPort = null;
-    let quotaData = null;
-
-    for (const port of candidatePorts) {
-        const res = probeAntigravityRpc(port, 'RetrieveUserQuotaSummary');
-        if (res?.response?.groups) {
-            workingPort = port;
-            quotaData = res.response;
-            break;
-        }
-    }
-
-    if (!workingPort || !quotaData) {
-        if (fallback.length) {
-            return record('antigravity', 'Google Antigravity', {
-                status: STATUS.ok,
-                limits: fallback,
-                plan: cachedPlan || 'Google AI Pro',
-                stale: true,
-                message: 'Could not reach Google quotas; showing last known limits. Run `agy` to refresh the sign-in.',
-            });
-        }
-        return record('antigravity', 'Google Antigravity', {
-            status: STATUS.notConfigured,
-            message: 'agy is not signed in. Run `agy` once to log in with Google.',
-        });
-    }
-
-    saveJson(AGY_PORT_CACHE, {port: workingPort});
-
-    let plan = cachedPlan || '';
-    try {
-        const userStatus = probeAntigravityRpc(workingPort, 'GetUserStatus');
-        if (userStatus?.userTier?.name)
-            plan = userStatus.userTier.name;
-    } catch {}
-
-    const limits = antigravityLimitsFromQuota(quotaData);
-
-    if (limits.length === 0) {
-        if (fallback.length) {
-            return record('antigravity', 'Google Antigravity', {
-                status: STATUS.ok,
-                limits: fallback,
-                plan,
-                stale: true,
-                message: 'No quota buckets returned by Antigravity; showing last known limits.',
-            });
-        }
-        return record('antigravity', 'Google Antigravity', {
-            status: STATUS.error,
-            plan,
-            message: 'Antigravity reported no active rate limits.',
-        });
-    }
-
-    saveJson(fallbackCache, {limits, plan, updatedAt: GLib.DateTime.new_now_local().format_iso8601()});
-
     return record('antigravity', 'Google Antigravity', {
-        status: STATUS.ok,
-        limits,
-        plan: plan || 'Google AI',
+        status: STATUS.notConfigured,
+        message: 'Nothing to read yet. Open Antigravity once, or run `agy` to sign in with Google.',
     });
 }
 
 /* ------------------------------------------------------------------- codex */
+
+/* A banked reset is a quota reset the account has earned and not spent. The
+ * app server reports how many are available and when each one expires; the
+ * count is what people act on, so only that and the soonest expiry are kept. */
+function codexBankedResets(rateResult) {
+    const banked = rateResult?.rateLimitResetCredits;
+    const count = Number(banked?.availableCount ?? 0);
+    if (!Number.isFinite(count) || count <= 0)
+        return null;
+    const expiries = (banked.credits ?? [])
+        .map(entry => entry?.expiresAt)
+        .filter(value => value !== null && value !== undefined)
+        .map(value => isoOrNull(value))
+        .filter(Boolean)
+        .sort();
+    return {count, expiresAt: expiries[0] ?? null};
+}
 
 /* The Codex CLI ships an `app-server` subcommand speaking JSON-RPC over stdio,
  * the same transport its editor integrations use. Two calls give us the plan
@@ -584,6 +661,7 @@ async function collectCodex() {
             plan,
             limits,
             balance,
+            resets: codexBankedResets(rateResult),
             message: rateLimits.spendControlReached ? 'Spend control reached.' : '',
         });
     } catch (error) {
@@ -765,7 +843,7 @@ async function collectClaude(force) {
     }
 
     const fetchedAt = Number(cached.fetchedAt ?? 0);
-    if (fallback.length && !force && Date.now() / 1000 - fetchedAt < CLAUDE_PROBE_MIN_INTERVAL_SECONDS)
+    if (fallback.length && !force && Date.now() / 1000 - fetchedAt < PROBE_MIN_INTERVAL_SECONDS)
         return record('claude', 'Claude Code', {status: STATUS.ok, limits: fallback, plan, balance: cached.balance ?? null});
 
     const probe = probeClaudeUsage(accessToken);
@@ -788,25 +866,79 @@ async function collectClaude(force) {
  * reports each window's used percent and reset time directly.
  *
  * This is the one function that knows the endpoint, so it is deliberately
- * isolated. Only the API key OpenCode itself stores is read; it is sent to
+ * isolated. Only the credential OpenCode itself stores is read; it is sent to
  * exactly one place (opencode.ai) and never logged. */
-const OPENCODE_GO_USAGE_ENDPOINT = 'https://opencode.ai/zen/go/v1/usage';
+const OPENCODE_GO_USAGE_ENDPOINT = 'https://opencode.ai/inference/go/v1/usage';
 const OPENCODE_GO_WINDOWS = [
     {key: 'rolling', label: '5h · $12'},
     {key: 'weekly', label: 'Weekly · $30'},
     {key: 'monthly', label: 'Monthly · $60'},
 ];
 
-function opencodeGoApiKey() {
-    const auth = readJson(GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'auth.json']));
-    const key = String(auth?.['opencode-go']?.key ?? '').trim();
-    return key || null;
+/* opencode v2 keeps the credential it signs its requests with in its own
+ * SQLite store. The legacy ~/.local/share/opencode/auth.json still holds an
+ * OpenCode Go API key, but a build that signed in with `/connect` (device
+ * flow) uses a Console session and leaves that file behind: the stale key
+ * answers 401 while the CLI itself works perfectly, which reads as a broken
+ * card. Read the live credential first and keep the file as a fallback.
+ *
+ * Only the access token is read, and the refresh token stored beside it is
+ * deliberately ignored, so this still cannot renew or rotate a credential. */
+const OPENCODE_STORE = GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'opencode.db']);
+
+const OPENCODE_CREDENTIAL_SQL = `
+import json, sqlite3, sys
+try:
+    con = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True, timeout=5)
+    rows = con.execute(
+        "select value from credential"
+        " where integration_id in ('opencode', 'opencode-go')"
+        " order by active desc, time_updated desc limit 5").fetchall()
+except Exception:
+    rows = []
+for (value,) in rows:
+    try:
+        credential = json.loads(value)
+    except Exception:
+        continue
+    token = str(credential.get('access') or credential.get('key') or '').strip()
+    if token:
+        print(token)
+        break
+`.trim();
+
+function opencodeStoredToken() {
+    const python = which('python3');
+    if (!python || !GLib.file_test(OPENCODE_STORE, GLib.FileTest.EXISTS))
+        return null;
+    try {
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
+        });
+        launcher.setenv('PATH', SEARCH_PATH, true);
+        const proc = launcher.spawnv([python, '-c', OPENCODE_CREDENTIAL_SQL, OPENCODE_STORE]);
+        const [, stdout] = proc.communicate_utf8(null, null);
+        return String(stdout ?? '').trim().split('\n')[0]?.trim() || null;
+    } catch (error) {
+        log_(`opencode credential store unreadable: ${error.message}`);
+        return null;
+    }
 }
 
-function probeOpencodeGoUsage(apiKey) {
+function opencodeGoToken() {
+    const stored = opencodeStoredToken();
+    if (stored)
+        return stored;
+
+    /* A machine that never ran the v2 sign-in has only this file. */
+    const auth = readJson(GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode', 'auth.json']));
+    return String(auth?.['opencode-go']?.key ?? auth?.opencode?.key ?? '').trim() || null;
+}
+
+function probeOpencodeGoUsage(token) {
     const session = new Soup.Session({timeout: 12, user_agent: 'agent-usage/1'});
     const message = Soup.Message.new('GET', OPENCODE_GO_USAGE_ENDPOINT);
-    message.request_headers.append('Authorization', `Bearer ${apiKey}`);
+    message.request_headers.append('Authorization', `Bearer ${token}`);
     message.request_headers.append('Accept', 'application/json');
 
     let body;
@@ -818,10 +950,23 @@ function probeOpencodeGoUsage(apiKey) {
 
     const code = message.get_status();
     if (code === 401 || code === 403) {
+        /* A rejection is either a Console session that needs renewing (only
+         * opencode can do that) or a legacy API key that lapsed by itself.
+         * OpenCode's own error says an expired key needs a *new* key, so the
+         * card must not send the reader in a circle. */
+        let errorCode = '';
+        try {
+            errorCode = JSON.parse(new TextDecoder().decode(body.get_data()))?.error?.code ?? '';
+        } catch {
+            errorCode = '';
+        }
         return {
             ok: false,
             status: STATUS.auth,
-            message: 'The OpenCode Go key was rejected. Run `/connect` in opencode to reconnect it.',
+            message: errorCode === 'api_key_expired'
+                ? 'OpenCode Go key expired — create a new key in the OpenCode Console and paste it'
+                    + ' with `/connect`; signing in again does not renew an expired key.'
+                : 'OpenCode Go sign-in is stale — open opencode so it can renew the session.',
         };
     }
     if (code < 200 || code >= 300)
@@ -851,13 +996,13 @@ function probeOpencodeGoUsage(apiKey) {
 }
 
 async function collectOpencodeGo(force) {
-    const apiKey = opencodeGoApiKey();
+    const token = opencodeGoToken();
 
     const probeCache = GLib.build_filenamev([CACHE_DIR, 'opencode-go-usage.json']);
     const cached = readJson(probeCache) ?? {};
     const fallback = (cached.limits ?? []).filter(entry => windowStillOpen(entry));
 
-    if (!apiKey) {
+    if (!token) {
         return record('opencode-go', 'OpenCode Go', {
             status: GLib.file_test(
                 GLib.build_filenamev([GLib.get_user_data_dir(), 'opencode']), GLib.FileTest.IS_DIR)
@@ -871,10 +1016,10 @@ async function collectOpencodeGo(force) {
     }
 
     const fetchedAt = Number(cached.fetchedAt ?? 0);
-    if (fallback.length && !force && Date.now() / 1000 - fetchedAt < CLAUDE_PROBE_MIN_INTERVAL_SECONDS)
+    if (fallback.length && !force && Date.now() / 1000 - fetchedAt < PROBE_MIN_INTERVAL_SECONDS)
         return record('opencode-go', 'OpenCode Go', {status: STATUS.ok, limits: fallback, plan: 'Go'});
 
-    const probe = probeOpencodeGoUsage(apiKey);
+    const probe = probeOpencodeGoUsage(token);
     if (probe.ok) {
         saveJson(probeCache, {fetchedAt: Date.now() / 1000, limits: probe.limits});
         return record('opencode-go', 'OpenCode Go', {status: STATUS.ok, limits: probe.limits, plan: 'Go', message: probe.message});
